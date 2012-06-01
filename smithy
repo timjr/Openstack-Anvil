@@ -240,7 +240,7 @@ def construct_log_level(verbosity_level, dry_run=False):
 
 def main():
     """
-    Starts the execution of without
+    Starts the execution of anvil without
     injecting variables into the global namespace. Ensures that
     logging is setup and that sudo access is available and in-use.
 
