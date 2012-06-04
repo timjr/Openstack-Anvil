@@ -499,7 +499,7 @@ class PythonUninstallComponent(PkgUninstallComponent):
 class ProgramRuntime(ComponentBase):
     def __init__(self, *args, **kargs):
         ComponentBase.__init__(self, *args, **kargs)
-        self.tracewriter = tr.TraceWriter(self._get_trace_files()['start'], break_if_there=True)
+        self.tracewriter = tr.TraceWriter(self._get_trace_files()['start'], break_if_there=False)
         self.tracereader = tr.TraceReader(self._get_trace_files()['start'])
 
     def _get_apps_to_start(self):
