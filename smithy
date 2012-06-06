@@ -190,6 +190,9 @@ def run(args):
     # Params for the runner...
     dist = distro.Distro.get_current()
     persona_inst = load_verify_persona(persona_fn, dist)
+    subsystem = args.pop("subsystem")
+    if subsystem:
+        persona_inst.subset(subsystem)
     config = establish_config(args)
 
     runner_cls = actions.get_action_class(action)
