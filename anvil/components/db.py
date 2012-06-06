@@ -16,6 +16,7 @@
 
 from anvil import colorizer
 from anvil import component as comp
+from anvil import constants
 from anvil import exceptions as excp
 from anvil import log as logging
 from anvil import shell as sh
@@ -49,7 +50,7 @@ class DBUninstaller(comp.PkgUninstallComponent):
 
     def __init__(self, *args, **kargs):
         comp.PkgUninstallComponent.__init__(self, *args, **kargs)
-        (runtime_cls, _) = self.distro.extract_component(self.component_name, 'running')
+        runtime_cls = self.siblings.get('running')
         if not runtime_cls:
             self.runtime = DBRuntime(*args, **kargs)
         else:
@@ -89,7 +90,7 @@ class DBInstaller(comp.PkgInstallComponent):
 
     def __init__(self, *args, **kargs):
         comp.PkgInstallComponent.__init__(self, *args, **kargs)
-        (runtime_cls, _) = self.distro.extract_component(self.component_name, 'running')
+        runtime_cls = self.siblings.get('running')
         if not runtime_cls:
             self.runtime = DBRuntime(*args, **kargs)
         else:
@@ -161,16 +162,13 @@ class DBRuntime(comp.EmptyRuntime):
         dbtype = self.cfg.get("db", "type")
         distro_options = self.distro.get_command_config(dbtype)
         if distro_options is None:
-            msg = BASE_ERROR % (act, dbtype)
-            raise NotImplementedError(msg)
+            raise NotImplementedError(BASE_ERROR % (act, dbtype))
         return self.distro.get_command(dbtype, act)
 
     def start(self):
-        if self.status() != comp.STATUS_STARTED:
+        if self._status() != constants.STATUS_STARTED:
             startcmd = self._get_run_actions('start', excp.StartException)
-            sh.execute(*startcmd,
-                run_as_root=True,
-                check_exit_code=True)
+            sh.execute(*startcmd, run_as_root=True, check_exit_code=True)
             LOG.info("Please wait %s seconds while it starts up." % self.wait_time)
             sh.sleep(self.wait_time)
             return 1
@@ -178,11 +176,9 @@ class DBRuntime(comp.EmptyRuntime):
             return 0
 
     def stop(self):
-        if self.status() != comp.STATUS_STOPPED:
+        if self._status() != constants.STATUS_STOPPED:
             stopcmd = self._get_run_actions('stop', excp.StopException)
-            sh.execute(*stopcmd,
-                run_as_root=True,
-                check_exit_code=True)
+            sh.execute(*stopcmd, run_as_root=True, check_exit_code=True)
             return 1
         else:
             return 0
@@ -190,26 +186,19 @@ class DBRuntime(comp.EmptyRuntime):
     def restart(self):
         LOG.info("Restarting your database.")
         restartcmd = self._get_run_actions('restart', excp.RestartException)
-        sh.execute(*restartcmd,
-                    run_as_root=True,
-                    check_exit_code=True)
+        sh.execute(*restartcmd, run_as_root=True, check_exit_code=True)
         LOG.info("Please wait %s seconds while it restarts." % self.wait_time)
         sh.sleep(self.wait_time)
         return 1
 
-    def status(self):
+    def _status(self):
         statuscmd = self._get_run_actions('status', excp.StatusException)
-        run_result = sh.execute(*statuscmd,
-                            run_as_root=True,
-                            check_exit_code=False)
-        if not run_result:
-            return comp.STATUS_UNKNOWN
-        (sysout, stderr) = run_result
+        (sysout, stderr) = sh.execute(*statuscmd, run_as_root=True, check_exit_code=False)
         combined = (str(sysout) + str(stderr)).lower()
         if combined.find("running") != -1:
-            return comp.STATUS_STARTED
+            return constants.STATUS_STARTED
         elif combined.find("stop") != -1 or \
              combined.find('unrecognized') != -1:
-            return comp.STATUS_STOPPED
+            return constants.STATUS_STOPPED
         else:
-            return comp.STATUS_UNKNOWN
+            return constants.STATUS_UNKNOWN
