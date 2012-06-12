@@ -14,10 +14,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+
 import os
 import weakref
 
-from anvil import date
+from anvil import cfg
 from anvil import exceptions
 from anvil import libvirt as lv
 from anvil import log as logging
@@ -28,6 +29,9 @@ from anvil.helpers import db as dbhelper
 
 LOG = logging.getLogger(__name__)
 
+# Paste configuration
+PASTE_CONF = 'nova-api-paste.ini'
+
 # Special generated conf
 API_CONF = 'nova.conf'
 
@@ -35,10 +39,10 @@ API_CONF = 'nova.conf'
 DB_NAME = 'nova'
 
 # Network class/driver/manager templs
+
+# These are only used if quantum is active
 QUANTUM_MANAGER = 'nova.network.quantum.manager.QuantumManager'
 QUANTUM_IPAM_LIB = 'nova.network.quantum.melange_ipam_lib'
-NET_MANAGER_TEMPLATE = 'nova.network.manager.%s'
-FIRE_MANAGER_TEMPLATE = 'nova.virt.libvirt.firewall.%s'
 
 # Sensible defaults
 DEF_IMAGE_SERVICE = 'nova.image.glance.GlanceImageService'
@@ -47,7 +51,6 @@ DEF_GLANCE_PORT = 9292
 DEF_GLANCE_SERVER = "%s" + ":%s" % (DEF_GLANCE_PORT)
 DEF_INSTANCE_PREFIX = 'instance-'
 DEF_INSTANCE_TEMPL = DEF_INSTANCE_PREFIX + '%08x'
-DEF_FIREWALL_DRIVER = 'IptablesFirewallDriver'
 DEF_FLAT_VIRT_BRIDGE = 'br100'
 DEF_NET_MANAGER = 'FlatDHCPManager'
 DEF_VOL_PREFIX = 'volume-'
@@ -71,6 +74,9 @@ QUANTUM_OPENSWITCH_OPS = {
     'linuxnet_interface_driver': 'nova.network.linux_net.LinuxOVSInterfaceDriver',
     'quantum_use_dhcp': True,
 }
+
+# Known mq types
+MQ_TYPES = ['rabbit', 'qpid', 'zeromq']
 
 # Xenserver specific defaults
 XS_DEF_INTERFACE = 'eth1'
@@ -110,8 +116,11 @@ VG_LVREMOVE_CMD = [
      'run_as_root': True}
 ]
 
-# Nova conf default section
-NV_CONF_DEF_SECTION = "[DEFAULT]"
+
+def canon_mq_type(mq_type):
+    if not mq_type:
+        return ''
+    return str(mq_type).lower().strip()
 
 
 def canon_virt_driver(virt_driver):
@@ -123,10 +132,48 @@ def canon_virt_driver(virt_driver):
     return virt_driver
 
 
-def get_shared_params(cfg):
+def get_shared_params(cfgobj):
     mp = dict()
-    host_ip = cfg.get('host', 'ip')
+
+    host_ip = cfgobj.get('host', 'ip')
     mp['service_host'] = host_ip
+    nova_host = cfgobj.getdefaulted('nova', 'nova_host', host_ip)
+    nova_protocol = cfgobj.getdefaulted('nova', 'nova_protocol', 'http')
+
+    # Uri's of the various nova endpoints
+    mp['endpoints'] = {
+        'ec2_admin': {
+            'uri': utils.make_url(nova_protocol, nova_host, 8773, "services/Admin"),
+            'port': 8773,
+            'host': host_ip,
+            'protocol': nova_protocol,
+        },
+        'ec2_cloud': {
+            'uri': utils.make_url(nova_protocol, nova_host, 8773, "services/Cloud"),
+            'port': 8773,
+            'host': host_ip,
+            'protocol': nova_protocol,
+        },
+        'volume': {
+            'uri': utils.make_url(nova_protocol, host_ip, 8776, "v1"),
+            'port': 8776,
+            'host': host_ip,
+            'protocol': nova_protocol,
+        },
+        's3': {
+            'uri': utils.make_url('http', host_ip, 3333),
+            'port': 3333,
+            'host': host_ip,
+            'protocol': nova_protocol,
+        },
+        'api': {
+            'uri': utils.make_url('http', host_ip, 8774, "v2"),
+            'port': 8774,
+            'host': host_ip,
+            'protocol': nova_protocol,
+        },
+    }
+
     return mp
 
 
@@ -135,9 +182,8 @@ def get_shared_params(cfg):
 class VolumeConfigurator(object):
     def __init__(self, installer):
         self.installer = weakref.proxy(installer)
-        self.cfg = installer.cfg
-        self.app_dir = installer.app_dir
         self.distro = installer.distro
+        self.cfg = self.installer.cfg
 
     def setup_volumes(self):
         self._setup_vol_groups()
@@ -148,7 +194,8 @@ class VolumeConfigurator(object):
     def _setup_vol_groups(self):
         LOG.info("Attempting to setup volume groups for nova volume management.")
         mp = dict()
-        backing_file = self.cfg.getdefaulted('nova', 'volume_backing_file', sh.joinpths(self.app_dir, 'nova-volumes-backing-file'))
+        backing_file = self.cfg.getdefaulted('nova', 'volume_backing_file',
+                       sh.joinpths(self.installer.get_option('app_dir'), 'nova-volumes-backing-file'))
         vol_group = self.cfg.getdefaulted('nova', 'volume_group', 'nova-volumes')
         backing_file_size = utils.to_bytes(self.cfg.getdefaulted('nova', 'volume_backing_file_size', '2052M'))
         mp['VOLUME_GROUP'] = vol_group
@@ -214,16 +261,11 @@ class ConfConfigurator(object):
         self.installer = weakref.proxy(installer)
         self.cfg = installer.cfg
         self.instances = installer.instances
-        self.component_dir = installer.component_dir
-        self.app_dir = installer.app_dir
         self.tracewriter = installer.tracewriter
-        self.paste_conf_fn = installer.paste_conf_fn
+        self.paste_conf_fn = installer._get_target_config_name(PASTE_CONF)
         self.distro = installer.distro
-        self.cfg_dir = installer.cfg_dir
-        self.options = installer.options
         self.xvnc_enabled = installer.xvnc_enabled
         self.volumes_enabled = installer.volumes_enabled
-        self.novnc_enabled = 'no-vnc' in installer.options
 
     def _getbool(self, name):
         return self.cfg.getboolean('nova', name)
@@ -254,31 +296,21 @@ class ConfConfigurator(object):
             if flat_interface and not flat_interface in known_interfaces:
                 msg = "Libvirt flat interface %s is not a known interface (is it one of %s??)" % (flat_interface, ", ".join(known_interfaces))
                 raise exceptions.ConfigException(msg)
+        mq_type = canon_mq_type(self.installer.get_option('mq'))
+        if mq_type not in MQ_TYPES:
+            msg = "Unknown message queue type %s (is it one of %s??)" % (mq_type, ", ".join(MQ_TYPES))
+            raise exceptions.ConfigException(msg)
 
-    def configure(self, root_wrapped):
+    def configure(self, fn=API_CONF, root_wrapped=False):
 
         # Everything built goes in here
-        nova_conf = Conf()
+        nova_conf = Conf(fn)
 
         # Used more than once so we calculate it ahead of time
         hostip = self.cfg.get('host', 'ip')
 
         if self._getbool('verbose'):
             nova_conf.add('verbose', True)
-
-        # Check if we have a logdir specified. If we do, we'll make
-        # sure that it exists. We will *not* use tracewrite because we
-        # don't want to lose the logs when we uninstall
-        logdir = self._getstr('logdir')
-        if logdir:
-            full_logdir = sh.abspth(logdir)
-            nova_conf.add('logdir', full_logdir)
-            # Will need to be root to create it since it may be in /var/log
-            if not sh.isdir(full_logdir):
-                LOG.debug("Making sure that nova logdir exists at: %s" % full_logdir)
-                with sh.Rooted(True):
-                    sh.mkdir(full_logdir)
-                    sh.chmod(full_logdir, 0777)
 
         # Allow the admin api?
         if self._getbool('allow_admin_api'):
@@ -291,10 +323,7 @@ class ConfConfigurator(object):
         nova_conf.add('compute_scheduler_driver', self._getstr('scheduler', DEF_SCHEDULER))
 
         # Rate limit the api??
-        if self._getbool('api_rate_limit'):
-            nova_conf.add('api_rate_limit', str(True))
-        else:
-            nova_conf.add('api_rate_limit', str(False))
+        nova_conf.add('api_rate_limit', self._getbool('api_rate_limit'))
 
         # Setup any network settings
         self._configure_network_settings(nova_conf)
@@ -326,10 +355,12 @@ class ConfConfigurator(object):
 
         # Auth will be using keystone
         nova_conf.add('auth_strategy', 'keystone')
-        
+
         # Don't always force images to raw
-        if not self._getbool('force_raw_images'):
-            nova_conf.add('force_raw_images', False)
+        nova_conf.add('force_raw_images', self._getbool('force_raw_images'))
+
+        # Add a checksum for images fetched to a hypervisor
+        nova_conf.add('checksum_base_images', self._getbool('checksum_base_images'))
 
         # Vnc settings setup
         self._configure_vnc(nova_conf)
@@ -344,12 +375,25 @@ class ConfConfigurator(object):
         nova_conf.add('ec2_dmz_host', self._getstr('ec2_dmz_host', hostip))
         nova_conf.add('s3_host', hostip)
 
-        # How is your rabbit setup?
-        nova_conf.add('rabbit_host', self.cfg.getdefaulted('rabbit', 'rabbit_host', hostip))
-        nova_conf.add('rabbit_password', self.cfg.get("passwords", "rabbit"))
+        # How is your mq setup?
+        mq_type = canon_mq_type(self.installer.get_option('mq'))
+        if mq_type == 'rabbit':
+            nova_conf.add('rabbit_host', self.cfg.getdefaulted('rabbit', 'rabbit_host', hostip))
+            nova_conf.add('rabbit_password', self.cfg.get("passwords", "rabbit"))
+            nova_conf.add('rabbit_userid', self.cfg.get('rabbit', 'rabbit_userid'))
+            nova_conf.add('rpc_backend', 'nova.rpc.impl_kombu')
+        elif mq_type == 'qpid':
+            nova_conf.add('rpc_backend', 'nova.rpc.impl_qpid')
+            nova_conf.add('qpid_hostname', self.cfg.getdefaulted('qpid', 'qpid_hostname', hostip))
+            qpid_user = self.cfg.get('qpid', 'qpid_username')
+            if qpid_user:
+                nova_conf.add('qpid_username', qpid_user)
+        elif mq_type == 'zeromq':
+            # TODO more needed???
+            nova_conf.add('rpc_backend', 'nova.rpc.impl_kombu')
 
         # Where instances will be stored
-        instances_path = self._getstr('instances_path', sh.joinpths(self.component_dir, 'instances'))
+        instances_path = self._getstr('instances_path', sh.joinpths(self.installer.get_option('component_dir'), 'instances'))
         self._configure_instances_path(instances_path, nova_conf)
 
         # Is this a multihost setup?
@@ -422,7 +466,7 @@ class ConfConfigurator(object):
             nova_conf.add('glance_api_servers', glance_api_server)
 
     def _configure_vnc(self, nova_conf):
-        if self.novnc_enabled:
+        if self.installer.get_option('no-vnc'):
             nova_conf.add('novncproxy_base_url', self._getstr('vncproxy_url'))
 
         if self.xvnc_enabled:
@@ -443,6 +487,7 @@ class ConfConfigurator(object):
 
         nova_conf.add('vncserver_proxyclient_address', vncserver_proxyclient_address)
 
+    # Fixes up your nova volumes
     def _configure_vols(self, nova_conf):
         nova_conf.add('volume_group', self._getstr('volume_group'))
         vol_name_tpl = self._getstr('volume_name_prefix') + self._getstr('volume_name_postfix')
@@ -453,7 +498,7 @@ class ConfConfigurator(object):
 
     def _configure_network_settings(self, nova_conf):
         # TODO this might not be right....
-        if 'quantum' in self.options:
+        if self.installer.get_option('quantum'):
             nova_conf.add('network_manager', QUANTUM_MANAGER)
             hostip = self.cfg.get('host', 'ip')
             nova_conf.add('quantum_connection_host', self.cfg.getdefaulted('quantum', 'q_host', hostip))
@@ -461,17 +506,17 @@ class ConfConfigurator(object):
             if self.cfg.get('quantum', 'q_plugin') == 'openvswitch':
                 for (key, value) in QUANTUM_OPENSWITCH_OPS.items():
                     nova_conf.add(key, value)
-            if 'melange' in self.options:
+            if self.installer.get_option('melange'):
                 nova_conf.add('quantum_ipam_lib', QUANTUM_IPAM_LIB)
                 nova_conf.add('use_melange_mac_generation', True)
                 nova_conf.add('melange_host', self.cfg.getdefaulted('melange', 'm_host', hostip))
                 nova_conf.add('melange_port', self.cfg.getdefaulted('melange', 'm_port', '9898'))
         else:
-            nova_conf.add('network_manager', NET_MANAGER_TEMPLATE % (self._getstr('network_manager', DEF_NET_MANAGER)))
+            nova_conf.add('network_manager', self._getstr('network_manager'))
 
         # Configs dhcp bridge stuff???
         # TODO: why is this the same as the nova.conf?
-        nova_conf.add('dhcpbridge_flagfile', sh.joinpths(self.cfg_dir, API_CONF))
+        nova_conf.add('dhcpbridge_flagfile', sh.joinpths(self.installer.get_option('cfg_dir'), API_CONF))
 
         # Network prefix for the IP network that all the projects for future VM guests reside on. Example: 192.168.0.0/12
         nova_conf.add('fixed_range', self._getstr('fixed_range'))
@@ -486,11 +531,28 @@ class ConfConfigurator(object):
         # This forces dnsmasq to update its leases table when an instance is terminated.
         nova_conf.add('force_dhcp_release', True)
 
+        # Special virt driver network settings
+        drive_canon = canon_virt_driver(self._getstr('virt_driver'))
+        if drive_canon == 'xenserver':
+            nova_conf.add('noflat_injected', True)
+            nova_conf.add('flat_network_bridge', self._getstr('xs_flat_network_bridge', XS_DEF_BRIDGE))
+            xs_flat_ifc = self._getstr('xs_flat_interface', XS_DEF_INTERFACE)
+            if xs_flat_ifc:
+                nova_conf.add('flat_interface', xs_flat_ifc)
+        else:
+            nova_conf.add('flat_network_bridge', self._getstr('flat_network_bridge', DEF_FLAT_VIRT_BRIDGE))
+            nova_conf.add('flat_injected', self._getbool('flat_injected'))
+            flat_interface = self._getstr('flat_interface')
+            if flat_interface:
+                nova_conf.add('flat_interface', flat_interface)
+
+    # Enables multihost (??)
     def _configure_multihost(self, nova_conf):
         if self._getbool('multi_host'):
             nova_conf.add('multi_host', True)
             nova_conf.add('send_arp_for_ha', True)
 
+    # Ensures the place where instances will be is useable
     def _configure_instances_path(self, instances_path, nova_conf):
         nova_conf.add('instances_path', instances_path)
         LOG.debug("Attempting to create instance directory: %r", instances_path)
@@ -509,6 +571,7 @@ class ConfConfigurator(object):
                     # Need to be able to go into that directory
                     sh.chmod(p, os.stat(p).st_mode | 0755)
 
+    # Any special libvirt configurations go here
     def _configure_libvirt(self, virt_type, nova_conf):
         if virt_type == 'lxc':
             #TODO need to add some goodies here
@@ -524,28 +587,20 @@ class ConfConfigurator(object):
             nova_conf.add('xenapi_connection_url', self._getstr('xa_connection_url', XA_DEF_CONNECTION_URL))
             nova_conf.add('xenapi_connection_username', self._getstr('xa_connection_username', XA_DEF_USER))
             nova_conf.add('xenapi_connection_password', self.cfg.get("passwords", "xenapi_connection"))
-            nova_conf.add('noflat_injected', True)
-            nova_conf.add('firewall_driver', FIRE_MANAGER_TEMPLATE % (self._getstr('xs_firewall_driver', DEF_FIREWALL_DRIVER)))
-            nova_conf.add('flat_network_bridge', self._getstr('xs_flat_network_bridge', XS_DEF_BRIDGE))
-            xs_flat_ifc = self._getstr('xs_flat_interface', XS_DEF_INTERFACE)
-            if xs_flat_ifc:
-                nova_conf.add('flat_interface', xs_flat_ifc)
+            nova_conf.add('firewall_driver', self._getstr('xs_firewall_driver'))
         elif drive_canon == 'libvirt':
-            nova_conf.add('firewall_driver', FIRE_MANAGER_TEMPLATE % (self._getstr('libvirt_firewall_driver', DEF_FIREWALL_DRIVER)))
-            nova_conf.add('flat_network_bridge', self._getstr('flat_network_bridge', DEF_FLAT_VIRT_BRIDGE))
-            flat_interface = self._getstr('flat_interface')
-            if flat_interface:
-                nova_conf.add('flat_interface', flat_interface)
+            nova_conf.add('firewall_driver', self._getstr('libvirt_firewall_driver'))
+        else:
+            nova_conf.add('firewall_driver', self._getstr('basic_firewall_driver'))
 
 
 # This class represents the data/format of the nova config file
 class Conf(object):
-    def __init__(self):
-        self.lines = list()
+    def __init__(self, name):
+        self.backing = cfg.BuiltinConfigParser()
+        self.name = name
 
     def add(self, key, value, *values):
-        if not key:
-            raise exceptions.BadParamException("Can not add a empty/none/false key")
         real_key = str(key)
         real_value = ""
         if len(values):
@@ -553,36 +608,8 @@ class Conf(object):
             real_value = ",".join(str_values)
         else:
             real_value = str(value)
-        self.lines.append({'key': real_key, 'value': real_value})
+        self.backing.set('DEFAULT', real_key, real_value)
         LOG.debug("Added nova conf key %r with value %r" % (real_key, real_value))
 
-    def _form_entry(self, key, value, params=None):
-        real_value = utils.param_replace(str(value), params)
-        entry = "%s=%s" % (key, real_value)
-        return entry
-
-    def _generate_header(self):
-        lines = list()
-        lines.append("# Generated on %s by (%s)" % (date.rcf8222date(), sh.getuser()))
-        lines.append("")
-        lines.append(NV_CONF_DEF_SECTION)
-        lines.append("")
-        return lines
-
-    def _generate_footer(self):
-        return list()
-
-    def generate(self, param_dict=None):
-        lines = list()
-        lines.extend(self._generate_header())
-        lines.extend(sorted(self._generate_lines(param_dict)))
-        lines.extend(self._generate_footer())
-        return utils.joinlinesep(*lines)
-
-    def _generate_lines(self, params=None):
-        lines = list()
-        for line_entry in self.lines:
-            key = line_entry.get('key')
-            value = line_entry.get('value')
-            lines.append(self._form_entry(key, value, params))
-        return lines
+    def generate(self):
+        return self.backing.stringify(fn=self.name)

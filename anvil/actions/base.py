@@ -18,13 +18,11 @@ import abc
 import collections
 
 from anvil import colorizer
-from anvil import date
 from anvil import exceptions as excp
+from anvil import importer
 from anvil import log as logging
-from anvil import packager
-from anvil import pip
+from anvil import phase
 from anvil import shell as sh
-from anvil import trace as tr
 from anvil import utils
 
 LOG = logging.getLogger(__name__)
@@ -35,7 +33,6 @@ PhaseFunctors = collections.namedtuple('PhaseFunctors', ['start', 'run', 'end'])
 
 class Action(object):
     __meta__ = abc.ABCMeta
-    NAME = None
 
     def __init__(self, distro, cfg, root_dir, **kargs):
         self.distro = distro
@@ -43,6 +40,14 @@ class Action(object):
         self.keep_old = kargs.get('keep_old', False)
         self.force = kargs.get('force', False)
         self.root_dir = root_dir
+
+    @staticmethod
+    def get_lookup_name():
+        raise NotImplementedError()
+
+    @staticmethod
+    def get_action_name():
+        raise NotImplementedError()
 
     @abc.abstractmethod
     def _run(self, persona, component_order, instances):
@@ -58,7 +63,7 @@ class Action(object):
         # Duplicate the list to avoid problems if it is updated later.
         return list(components)
 
-    def get_component_dirs(self, component):
+    def _get_component_dirs(self, component):
         component_dir = sh.joinpths(self.root_dir, component)
         trace_dir = sh.joinpths(component_dir, 'traces')
         app_dir = sh.joinpths(component_dir, 'app')
@@ -71,36 +76,62 @@ class Action(object):
             'trace_dir': trace_dir,
         }
 
+    def _merge_options(self, name, base_opts, component_opts, persona_opts):
+        joined_opts = dict()
+        joined_opts.update(self._get_component_dirs(name))
+        if base_opts:
+            joined_opts.update(base_opts)
+        if component_opts:
+            joined_opts.update(component_opts)
+        if persona_opts:
+            joined_opts.update(persona_opts)
+        return joined_opts
+
+    def _merge_subsystems(self, component_subsys, desired_subsys):
+        joined_subsys = {}
+        if not component_subsys:
+            component_subsys = dict()
+        if not desired_subsys:
+            return joined_subsys
+        for subsys in desired_subsys:
+            if subsys in component_subsys:
+                joined_subsys[subsys] = component_subsys[subsys]
+            else:
+                joined_subsys[subsys] = {}
+        return joined_subsys
+
+    def _convert_siblings(self, siblings):
+        mp = {}
+        for (action, cls_name) in siblings.items():
+            mp[action] = importer.import_entry_point(cls_name)
+        return mp
+
     def _construct_instances(self, persona):
         """
         Create component objects for each component in the persona.
         """
-        components = persona.wanted_components
-        desired_subsystems = persona.wanted_subsystems or {}
-        component_opts = persona.component_options or {}
+        p_subsystems = persona.wanted_subsystems or {}
+        p_opts = persona.component_options or {}
         instances = {}
-        pip_factory = packager.PackagerFactory(self.distro, pip.Packager)
-        pkg_factory = packager.PackagerFactory(self.distro, self.distro.get_default_package_manager_cls())
-        for c in components:
-            (cls, my_info) = self.distro.extract_component(c, self.NAME)
+        base_options = {
+            'keep_old': self.keep_old,
+        }
+        for c in persona.wanted_components:
+            ((cls, opts), siblings) = self.distro.extract_component(c, self.get_lookup_name())
             LOG.debug("Constructing class %s" % (cls))
             cls_kvs = {}
             cls_kvs['runner'] = self
-            cls_kvs.update(self.get_component_dirs(c))
-            cls_kvs['subsystem_info'] = my_info.get('subsystems') or {}
-            cls_kvs['all_instances'] = instances
+            cls_kvs['siblings'] = self._convert_siblings(siblings)
+            cls_kvs['subsystems'] = self._merge_subsystems(opts.pop('subsystems', None), p_subsystems.get(c))
+            cls_kvs['instances'] = instances
             cls_kvs['name'] = c
-            cls_kvs['keep_old'] = self.keep_old
-            cls_kvs['desired_subsystems'] = desired_subsystems.get(c) or set()
-            cls_kvs['options'] = component_opts.get(c) or {}
-            cls_kvs['pip_factory'] = pip_factory
-            cls_kvs['packager_factory'] = pkg_factory
-            # The above is not overrideable...
-            for (k, v) in my_info.items():
+            # Can't override the above
+            component_opts = {}
+            for (k, v) in opts.items():
                 if k not in cls_kvs:
-                    cls_kvs[k] = v
-                else:
-                    LOG.warn("You can not override component constructor variable named %s.", colorizer.quote(k))
+                    component_opts[k] = v
+            cls_kvs['options'] = self._merge_options(c, base_options, component_opts, p_opts.get(c))
+            LOG.debug("Construction of %r params are %s", c, cls_kvs)
             instances[c] = cls(**cls_kvs)
         return instances
 
@@ -114,57 +145,40 @@ class Action(object):
         for c in component_order:
             instances[c].warm_configs()
 
-    def _skip_phase(self, instance, mark):
-        phase_fn = "%s.phases" % (self.NAME)
-        trace_fn = tr.trace_fn(self.root_dir, phase_fn)
-        name = instance.component_name
-        LOG.debug("Checking if we already completed phase %r by looking in %r for component %s", mark, trace_fn, name)
-        skipable = False
-        try:
-            reader = tr.TraceReader(trace_fn)
-            marks = reader.marks_made()
-            for mark_found in marks:
-                if mark == mark_found.get('id') and name == mark_found.get('name'):
-                    skipable = True
-                    LOG.debug("Completed phase %r on for component %s: %s", mark, mark_found.get('name'), mark_found.get('when'))
-                    break
-        except excp.NoTraceException:
-            pass
-        return skipable
+    def _get_phase_dir(self, action_name=None):
+        if not action_name:
+            action_name = self.get_action_name()
+        return sh.joinpths(self.root_dir, "phases", action_name)
 
-    def _mark_phase(self, instance, mark):
-        phase_fn = "%s.phases" % (self.NAME)
-        trace_fn = tr.trace_fn(self.root_dir, phase_fn)
-        name = instance.component_name
-        writer = tr.TraceWriter(trace_fn, break_if_there=False)
-        LOG.debug("Marking we completed phase %r in file %r for component %s", mark, trace_fn, name)
-        details = {
-            'id': mark,
-            'when': date.rcf8222date(),
-            'name': name,
-        }
-        writer.mark(details)
+    def _get_phase_fn(self, phase_name):
+        dirname = self._get_phase_dir()
+        sh.mkdirslist(dirname)
+        return sh.joinpths(dirname, "%s.phases" % (phase_name.lower()))
 
     def _run_phase(self, functors, component_order, instances, phase_name):
         """
         Run a given 'functor' across all of the components, in order.
         """
         component_results = dict()
+        if phase_name:
+            phase_recorder = phase.PhaseRecorder(self._get_phase_fn(phase_name))
+        else:
+            phase_recorder = phase.NullPhaseRecorder()
         for c in component_order:
             instance = instances[c]
-            if self._skip_phase(instance, phase_name):
-                LOG.debug("Skipping phase named %r for component %r", phase_name, c)
+            if phase_recorder.has_ran(c):
+                LOG.debug("Skipping phase named %r for component %r since it already happened.", phase_name, c)
             else:
                 try:
-                    if functors.start:
-                        functors.start(instance)
                     result = None
-                    if functors.run:
-                        result = functors.run(instance)
-                    if functors.end:
-                        functors.end(instance, result)
+                    with phase_recorder.mark(c):
+                        if functors.start:
+                            functors.start(instance)
+                        if functors.run:
+                            result = functors.run(instance)
+                        if functors.end:
+                            functors.end(instance, result)
                     component_results[instance] = result
-                    self._mark_phase(instance, phase_name)
                 except (excp.NoTraceException) as e:
                     if self.force:
                         LOG.debug("Skipping exception: %s" % (e))
@@ -172,15 +186,14 @@ class Action(object):
                         raise
         return component_results
 
-    def _delete_phase_files(self, names):
-        phase_dir = self.root_dir
-        for name in names:
-            sh.unlink(tr.trace_fn(phase_dir, "%s.phases" % (name)))
+    def _delete_phase_files(self, action_names):
+        for n in action_names:
+            sh.deldir(self._get_phase_dir(n))
 
     def run(self, persona):
         instances = self._construct_instances(persona)
         component_order = self._order_components(persona.wanted_components)
-        LOG.info("Processing components for action %s.", colorizer.quote(self.NAME or "???"))
+        LOG.info("Processing components for action %s.", colorizer.quote(self.get_action_name()))
         utils.log_iterable(component_order,
                         header="Activating in the following order",
                         logger=LOG)

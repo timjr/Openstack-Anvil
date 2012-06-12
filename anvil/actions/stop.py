@@ -18,7 +18,6 @@ from anvil import colorizer
 from anvil import log
 
 from anvil.actions import base
-from anvil.actions import start
 
 from anvil.actions.base import PhaseFunctors
 
@@ -26,7 +25,14 @@ LOG = log.getLogger(__name__)
 
 
 class StopAction(base.Action):
-    NAME = 'running'
+
+    @staticmethod
+    def get_lookup_name():
+        return 'running'
+
+    @staticmethod
+    def get_action_name():
+        return 'stop'
 
     def _order_components(self, components):
         components = super(StopAction, self)._order_components(components)
@@ -36,7 +42,7 @@ class StopAction(base.Action):
     def _run(self, persona, component_order, instances):
         self._run_phase(
             PhaseFunctors(
-                start=lambda i: LOG.info('Stopping %s.', colorizer.quote(i.component_name)),
+                start=lambda i: LOG.info('Stopping %s.', colorizer.quote(i.name)),
                 run=lambda i: i.stop(),
                 end=lambda i, result: LOG.info("Stopped %s items.", colorizer.quote(result)),
             ),
@@ -44,4 +50,5 @@ class StopAction(base.Action):
             instances,
             "Stopped"
             )
-        self._delete_phase_files(set([self.NAME, start.StartAction.NAME]))
+        # Knock off and phase files that are connected to starting
+        self._delete_phase_files(['start'])

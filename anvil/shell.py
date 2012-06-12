@@ -14,13 +14,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import errno
 import fileinput
 import getpass
 import grp
 import os
 import pwd
+import resource
 import shutil
+import signal
 import subprocess
+import sys
 import time
 
 from anvil import env
@@ -99,10 +103,13 @@ def execute(*cmd, **kwargs):
     run_as_root = kwargs.pop('run_as_root', False)
     shell = kwargs.pop('shell', False)
 
+    # Ensure all string args
     execute_cmd = list()
     for c in cmd:
         execute_cmd.append(str(c))
 
+    # From the docs it seems a shell command must be a string??
+    # TODO: this might not really be needed?
     str_cmd = " ".join(execute_cmd)
     if shell:
         execute_cmd = str_cmd.strip()
@@ -204,16 +211,28 @@ def execute(*cmd, **kwargs):
         stderr = ''
 
     if (not ignore_exit_code) and (rc not in check_exit_code):
-        raise excp.ProcessExecutionError(exit_code=rc, stdout=stdout, \
+        raise excp.ProcessExecutionError(exit_code=rc, stdout=stdout,
                                          stderr=stderr, cmd=str_cmd)
     else:
         # Log it anyway
         if rc not in check_exit_code:
-            LOG.debug("A failure may of just happened when running command %r [%s] (%s, %s)", \
-                str_cmd, rc, stdout.strip(), stderr.strip())
+            LOG.debug("A failure may of just happened when running command %r [%s] (%s, %s)",
+                       str_cmd, rc, stdout, stderr)
         # Log for debugging figuring stuff out
-        LOG.debug("Received stdout: %s" % (stdout.strip()))
-        LOG.debug("Received stderr: %s" % (stderr.strip()))
+        LOG.debug("Received stdout: %s" % (stdout))
+        LOG.debug("Received stderr: %s" % (stderr))
+        # See if a requested storage place was given for stderr/stdout
+        trace_writer = kwargs.get('trace_writer')
+        stdout_fn = kwargs.get('stdout_fn')
+        if stdout_fn:
+            write_file(stdout_fn, stdout)
+            if trace_writer:
+                trace_writer.file_touched(stdout_fn)
+        stderr_fn = kwargs.get('stderr_fn')
+        if stderr_fn:
+            write_file(stderr_fn, stderr)
+            if trace_writer:
+                trace_writer.file_touched(stderr_fn)
         return (stdout, stderr)
 
 
@@ -227,6 +246,21 @@ def abspth(path):
 
 def isuseable(path, options=os.W_OK | os.R_OK | os.X_OK):
     return os.access(path, options)
+
+
+def pipe_in_out(in_fh, out_fh, chunk_size=1024, chunk_cb=None):
+    bytes_piped = 0
+    LOG.debug("Transferring the contents of %s to %s in chunks of size %s.", in_fh, out_fh, chunk_size)
+    while True:
+        data = in_fh.read(chunk_size)
+        if data == '':
+            break
+        else:
+            out_fh.write(data)
+            bytes_piped += len(data)
+            if chunk_cb:
+                chunk_cb(bytes_piped)
+    return bytes_piped
 
 
 def shellquote(text):
@@ -354,6 +388,102 @@ def _array_begins_with(haystack, needle):
     return True
 
 
+def kill(pid, max_try=4, wait_time=1, sig=signal.SIGKILL):
+    if not is_running(pid) or DRYRUN_MODE:
+        return (True, 0)
+    killed = False
+    attempts = 0
+    for i in range(0, max_try):
+        try:
+            LOG.debug("Attempting to kill pid %s" % (pid))
+            attempts += 1
+            os.kill(pid, sig)
+            LOG.debug("Sleeping for %s seconds before next attempt to kill pid %s" % (wait_time, pid))
+            sleep(wait_time)
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                killed = True
+                break
+            else:
+                LOG.debug("Sleeping for %s seconds before next attempt to kill pid %s" % (wait_time, pid))
+                sleep(wait_time)
+    return (killed, attempts)
+
+
+def fork(program, app_dir, pid_fn, stdout_fn, stderr_fn, *args):
+    if DRYRUN_MODE:
+        return
+    # First child, not the real program
+    pid = os.fork()
+    if pid == 0:
+        # Upon return the calling process shall be the session
+        # leader of this new session,
+        # shall be the process group leader of a new process group,
+        # and shall have no controlling terminal.
+        os.setsid()
+        pid = os.fork()
+        # Fork to get daemon out - this time under init control
+        # and now fully detached (no shell possible)
+        if pid == 0:
+            # Move to where application should be
+            if app_dir:
+                os.chdir(app_dir)
+            # Close other fds (or try)
+            (soft, hard) = resource.getrlimit(resource.RLIMIT_NOFILE)
+            mkfd = hard
+            if mkfd == resource.RLIM_INFINITY:
+                mkfd = 2048  # Is this defined anywhere??
+            for fd in range(0, mkfd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    # Not open, thats ok
+                    pass
+            # Now adjust stderr and stdout
+            if stdout_fn:
+                stdoh = open(stdout_fn, "w")
+                os.dup2(stdoh.fileno(), sys.stdout.fileno())
+            if stderr_fn:
+                stdeh = open(stderr_fn, "w")
+                os.dup2(stdeh.fileno(), sys.stderr.fileno())
+            # Now exec...
+            # Note: The arguments to the child process should
+            # start with the name of the command being run
+            prog_little = basename(program)
+            actualargs = [prog_little] + list(args)
+            os.execlp(program, *actualargs)
+        else:
+            # Write out the child pid
+            contents = "%s\n" % (pid)
+            write_file(pid_fn, contents, quiet=True)
+            # Not exit or sys.exit, this is recommended
+            # since it will do the right cleanups that we want
+            # not calling any atexit functions, which would
+            # be bad right now
+            os._exit(0)
+
+
+def is_running(pid):
+    if DRYRUN_MODE:
+        return True
+    # Check proc
+    proc_fn = joinpths("/proc", str(pid))
+    if exists(proc_fn):
+        LOG.debug("By looking at %s we determined %s is still running.", proc_fn, pid)
+        return True
+    # Try a slightly more aggressive way...
+    running = True
+    try:
+        os.kill(pid, 0)
+    except OSError as e:
+        if e.errno == errno.EPERM:
+            pass
+        else:
+            running = False
+    LOG.debug("By attempting to signal %s we determined it is %s", pid, {True: 'alive', False: 'dead'}[running])
+    return running
+
+
 def mkdirslist(path):
     LOG.debug("Determining potential paths to create for target path %r" % (path))
     dirs_possible = _explode_form_path(path)
@@ -425,6 +555,7 @@ def mkdir(path, recurse=True):
             LOG.audit("Creating directory %r" % (path))
             if not DRYRUN_MODE:
                 os.mkdir(path)
+    return path
 
 
 def deldir(path, run_as_root=False):

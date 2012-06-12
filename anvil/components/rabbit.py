@@ -18,9 +18,9 @@ from tempfile import TemporaryFile
 
 from anvil import colorizer
 from anvil import component as comp
+from anvil import constants
 from anvil import log as logging
 from anvil import shell as sh
-from anvil import utils
 
 from anvil.helpers import rabbit as rhelper
 
@@ -39,8 +39,7 @@ PW_USER_PROMPT = rhelper.PW_USER_PROMPT
 class RabbitUninstaller(comp.PkgUninstallComponent):
     def __init__(self, *args, **kargs):
         comp.PkgUninstallComponent.__init__(self, *args, **kargs)
-        self.runtime = RabbitRuntime(*args, **kargs)
-        (runtime_cls, _) = self.distro.extract_component(self.component_name, 'running')
+        runtime_cls = self.siblings.get('running')
         if not runtime_cls:
             self.runtime = RabbitRuntime(*args, **kargs)
         else:
@@ -60,7 +59,7 @@ class RabbitUninstaller(comp.PkgUninstallComponent):
 class RabbitInstaller(comp.PkgInstallComponent):
     def __init__(self, *args, **kargs):
         comp.PkgInstallComponent.__init__(self, *args, **kargs)
-        (runtime_cls, _) = self.distro.extract_component(self.component_name, 'running')
+        runtime_cls = self.siblings.get('running')
         if not runtime_cls:
             self.runtime = RabbitRuntime(*args, **kargs)
         else:
@@ -71,12 +70,13 @@ class RabbitInstaller(comp.PkgInstallComponent):
             self.cfg.get_password(pw_key, PW_USER_PROMPT)
 
     def _setup_pw(self):
-        LOG.info("Setting up your rabbit-mq guest password.")
+        user_id = self.cfg.get('rabbit', 'rabbit_userid')
+        LOG.info("Setting up your rabbit-mq %s password.", colorizer.quote(user_id))
         self.runtime.restart()
         passwd = self.cfg.get_password("rabbit", PW_USER_PROMPT)
-        cmd = self.distro.get_command('rabbit-mq', 'change_password') + [passwd]
+        cmd = self.distro.get_command('rabbit-mq', 'change_password') + [user_id, passwd]
         sh.execute(*cmd, run_as_root=True)
-        LOG.info("Restarting so that your rabbit-mq guest password is reflected.")
+        LOG.info("Restarting so that your rabbit-mq password is reflected.")
         self.runtime.restart()
 
     def post_install(self):
@@ -88,36 +88,29 @@ class RabbitRuntime(comp.EmptyRuntime):
     def __init__(self, *args, **kargs):
         comp.EmptyRuntime.__init__(self, *args, **kargs)
         self.wait_time = max(self.cfg.getint('DEFAULT', 'service_wait_seconds'), 1)
-        self.redir_out = utils.make_bool(self.distro.get_command_config('rabbit-mq', 'redirect-outs'))
 
     def start(self):
-        if self.status() != comp.STATUS_STARTED:
+        if self._status() != constants.STATUS_STARTED:
             self._run_cmd(self.distro.get_command('rabbit-mq', 'start'))
             return 1
         else:
             return 0
 
-    def status(self):
+    def _status(self):
         # This has got to be the worst status output.
         #
         # I have ever seen (its like a weird mix json+crap)
-        run_result = sh.execute(
-            *self.distro.get_command('rabbit-mq', 'status'),
-            check_exit_code=False,
-            run_as_root=True)
-        if not run_result:
-            return comp.STATUS_UNKNOWN
-        (sysout, stderr) = run_result
-        combined = str(sysout) + str(stderr)
-        combined = combined.lower()
+        status_cmd = self.distro.get_command('rabbit-mq', 'status')
+        (sysout, stderr) = sh.execute(*status_cmd, check_exit_code=False, run_as_root=True)
+        combined = (str(sysout) + str(stderr)).lower()
         if combined.find('nodedown') != -1 or \
            combined.find("unable to connect to node") != -1 or \
            combined.find('unrecognized') != -1:
-            return comp.STATUS_STOPPED
+            return constants.STATUS_STOPPED
         elif combined.find('running_applications') != -1:
-            return comp.STATUS_STARTED
+            return constants.STATUS_STARTED
         else:
-            return comp.STATUS_UNKNOWN
+            return constants.STATUS_UNKNOWN
 
     def _run_cmd(self, cmd, check_exit=True):
         # This seems to fix one of the bugs with rabbit mq starting and stopping
@@ -127,14 +120,10 @@ class RabbitRuntime(comp.EmptyRuntime):
         # See: https://bugs.launchpad.net/ubuntu/+source/rabbitmq-server/+bug/878600
         #
         # RHEL seems to have this bug also...
-        if self.redir_out:
-            with TemporaryFile() as f:
-                return sh.execute(*cmd, run_as_root=True,
-                            stdout_fh=f, stderr_fh=f,
-                            check_exit_code=check_exit)
-        else:
+        with TemporaryFile() as f:
             return sh.execute(*cmd, run_as_root=True,
-                                check_exit_code=check_exit)
+                        stdout_fh=f, stderr_fh=f,
+                        check_exit_code=check_exit)
 
     def restart(self):
         LOG.info("Restarting rabbit-mq.")
@@ -144,7 +133,7 @@ class RabbitRuntime(comp.EmptyRuntime):
         return 1
 
     def stop(self):
-        if self.status() != comp.STATUS_STOPPED:
+        if self._status() != constants.STATUS_STOPPED:
             self._run_cmd(self.distro.get_command('rabbit-mq', 'stop'))
             return 1
         else:

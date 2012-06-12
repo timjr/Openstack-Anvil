@@ -18,7 +18,6 @@ from anvil import colorizer
 from anvil import log
 
 from anvil.actions import base
-from anvil.actions import install
 
 from anvil.actions.base import PhaseFunctors
 
@@ -26,7 +25,14 @@ LOG = log.getLogger(__name__)
 
 
 class UninstallAction(base.Action):
-    NAME = 'uninstall'
+
+    @staticmethod
+    def get_lookup_name():
+        return 'uninstall'
+
+    @staticmethod
+    def get_action_name():
+        return 'uninstall'
 
     def _order_components(self, components):
         components = super(UninstallAction, self)._order_components(components)
@@ -36,7 +42,7 @@ class UninstallAction(base.Action):
     def _run(self, persona, component_order, instances):
         self._run_phase(
             PhaseFunctors(
-                start=lambda i: LOG.info('Unconfiguring %s.', colorizer.quote(i.component_name)),
+                start=lambda i: LOG.info('Unconfiguring %s.', colorizer.quote(i.name)),
                 run=lambda i: i.unconfigure(),
                 end=None,
             ),
@@ -56,7 +62,7 @@ class UninstallAction(base.Action):
             )
         self._run_phase(
             PhaseFunctors(
-                start=lambda i: LOG.info('Uninstalling %s.', colorizer.quote(i.component_name)),
+                start=lambda i: LOG.info('Uninstalling %s.', colorizer.quote(i.name)),
                 run=lambda i: i.uninstall(),
                 end=None,
             ),
@@ -66,7 +72,7 @@ class UninstallAction(base.Action):
             )
         self._run_phase(
             PhaseFunctors(
-                start=lambda i: LOG.info('Post-uninstalling %s.', colorizer.quote(i.component_name)),
+                start=lambda i: LOG.info('Post-uninstalling %s.', colorizer.quote(i.name)),
                 run=lambda i: i.post_uninstall(),
                 end=None,
             ),
@@ -74,4 +80,5 @@ class UninstallAction(base.Action):
             instances,
             "Post-uninstall",
             )
-        self._delete_phase_files(set([self.NAME, install.InstallAction.NAME]))
+        # Knock off and phase files that are connected to installing
+        self._delete_phase_files(['install'])

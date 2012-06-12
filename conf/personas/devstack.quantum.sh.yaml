@@ -13,20 +13,25 @@ components:
 - quantum-client
 - nova-client
 - nova
+# Installed after nova since it needs to look for nova configs
 - no-vnc
 - horizon
+# Super client, so install after other clients
+- openstack-client
 description: Devstack.sh matching component installation + quantum!
 options:
     no-vnc:
         # This is the nova component name (we need this to hook into the nova conf...)
-        nova: nova
+        nova-component: nova
     nova:
-    - no-vnc
-    # Signal nova we are using quantum
-    - quantum
-    keystone:
-    # Signal keystone we are using quantum
-    - quantum
+        no-vnc: true
+        quantum: true
+        mq: rabbit
+        db-sync: true
+    quantum:
+        ovs-bridge-init: true
+    glance:
+        load-images: true
 subsystems:
     glance:
     - api

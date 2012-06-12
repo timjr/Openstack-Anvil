@@ -14,8 +14,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import io
-
 import yaml
 
 from anvil import cfg
@@ -42,6 +42,9 @@ BIN_DIR = "bin"
 
 # This yaml file controls keystone initialization
 INIT_WHAT_FN = 'init_what.yaml'
+
+# Existence of this file signifies that initialization ran
+INIT_WHAT_HAPPENED = "keystone.inited.yaml"
 
 # Simple confs
 ROOT_CONF = "keystone.conf"
@@ -79,7 +82,7 @@ class KeystoneUninstaller(comp.PythonUninstallComponent):
 class KeystoneInstaller(comp.PythonInstallComponent):
     def __init__(self, *args, **kargs):
         comp.PythonInstallComponent.__init__(self, *args, **kargs)
-        self.bin_dir = sh.joinpths(self.app_dir, BIN_DIR)
+        self.bin_dir = sh.joinpths(self.get_option('app_dir'), BIN_DIR)
 
     def _get_download_locations(self):
         places = list()
@@ -94,13 +97,10 @@ class KeystoneInstaller(comp.PythonInstallComponent):
         self._setup_db()
         self._sync_db()
 
-    def known_options(self):
-        return set(['swift', 'quantum'])
-
     def _sync_db(self):
         LOG.info("Syncing keystone to database: %s", colorizer.quote(DB_NAME))
         mp = self._get_param_map(None)
-        cmds = [{'cmd': SYNC_DB_CMD}]
+        cmds = [{'cmd': SYNC_DB_CMD, 'run_as_root': True}]
         utils.execute_template(*cmds, cwd=self.bin_dir, params=mp)
 
     def _get_config_files(self):
@@ -116,12 +116,12 @@ class KeystoneInstaller(comp.PythonInstallComponent):
             real_fn = LOGGING_SOURCE_FN
         elif config_fn == ROOT_CONF:
             real_fn = ROOT_SOURCE_FN
-        fn = sh.joinpths(self.app_dir, 'etc', real_fn)
+        fn = sh.joinpths(self.get_option('app_dir'), 'etc', real_fn)
         return (fn, sh.load_file(fn))
 
     def _config_adjust_logging(self, contents, fn):
         with io.BytesIO(contents) as stream:
-            config = cfg.IgnoreMissingConfigParser()
+            config = cfg.RewritableConfigParser()
             config.readfp(stream)
             config.set('logger_root', 'level', 'DEBUG')
             config.set('logger_root', 'handlers', "devel,production")
@@ -138,7 +138,7 @@ class KeystoneInstaller(comp.PythonInstallComponent):
     def _config_adjust_root(self, contents, fn):
         params = khelper.get_shared_params(self.cfg)
         with io.BytesIO(contents) as stream:
-            config = cfg.IgnoreMissingConfigParser()
+            config = cfg.RewritableConfigParser()
             config.readfp(stream)
             config.set('DEFAULT', 'admin_token', params['service_token'])
             config.set('DEFAULT', 'admin_port', params['endpoints']['admin']['port'])
@@ -171,17 +171,18 @@ class KeystoneInstaller(comp.PythonInstallComponent):
         # params with actual values
         mp = comp.PythonInstallComponent._get_param_map(self, config_fn)
         mp['BIN_DIR'] = self.bin_dir
-        mp['CONFIG_FILE'] = sh.joinpths(self.cfg_dir, ROOT_CONF)
+        mp['CONFIG_FILE'] = sh.joinpths(self.get_option('cfg_dir'), ROOT_CONF)
         return mp
 
 
 class KeystoneRuntime(comp.PythonRuntime):
     def __init__(self, *args, **kargs):
         comp.PythonRuntime.__init__(self, *args, **kargs)
-        self.bin_dir = sh.joinpths(self.app_dir, BIN_DIR)
+        self.bin_dir = sh.joinpths(self.get_option('app_dir'), BIN_DIR)
         self.wait_time = max(self.cfg.getint('DEFAULT', 'service_wait_seconds'), 1)
-        self.init_fn = sh.joinpths(self.trace_dir, 'was-inited')
-        self.init_what = yaml.load(utils.load_template(self.component_name, INIT_WHAT_FN)[1])
+        self.init_fn = sh.joinpths(self.get_option('trace_dir'), INIT_WHAT_HAPPENED)
+        (fn, contents) = utils.load_template(self.name, INIT_WHAT_FN)
+        self.init_what = yaml.load(contents)
 
     def post_start(self):
         if not sh.isfile(self.init_fn):
@@ -189,16 +190,16 @@ class KeystoneRuntime(comp.PythonRuntime):
             sh.sleep(self.wait_time)
             LOG.info("Running commands to initialize keystone.")
             LOG.debug("Initializing with %s", self.init_what)
-            init_cfg = dict()
-            init_cfg['glance'] = ghelper.get_shared_params(self.cfg)
-            init_cfg['keystone'] = khelper.get_shared_params(self.cfg)
-            init_cfg['nova'] = nhelper.get_shared_params(self.cfg)
-            init_cfg['quantum'] = qhelper.get_shared_params(self.cfg)
-            init_cfg['swift'] = shelper.get_shared_params(self.cfg)
-            khelper.Initializer(init_cfg).initialize(**self.init_what)
-            # Touching this makes sure that we don't init again
-            # TODO add trace
-            sh.touch_file(self.init_fn)
+            initial_cfg = dict()
+            initial_cfg['glance'] = ghelper.get_shared_params(self.cfg)
+            initial_cfg['keystone'] = khelper.get_shared_params(self.cfg)
+            initial_cfg['nova'] = nhelper.get_shared_params(self.cfg)
+            initial_cfg['quantum'] = qhelper.get_shared_params(self.cfg)
+            initial_cfg['swift'] = shelper.get_shared_params(self.cfg)
+            init_what = utils.param_replace_deep(copy.deepcopy(self.init_what), initial_cfg)
+            khelper.Initializer(initial_cfg['keystone']).initialize(**init_what)
+            # Writing this makes sure that we don't init again
+            sh.write_file(self.init_fn, utils.prettify_yaml(init_what))
             LOG.info("If you wish to re-run initialization, delete %s", colorizer.quote(self.init_fn))
 
     def _get_apps_to_start(self):

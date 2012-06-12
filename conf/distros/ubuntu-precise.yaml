@@ -60,8 +60,7 @@ commands:
         stop: service rabbitmq-server stop
         status: service rabbitmq-server status
         restart: service rabbitmq-server restart
-        change_password: rabbitmqctl change_password guest
-        redirect-outs: true
+        change_password: rabbitmqctl change_password
 components:
     db:
         action_classes:
@@ -215,7 +214,7 @@ components:
             version: 0.1*
         pips:
         -   name: jsonschema
-            version: 0.2
+            version: "0.2"
     glance-client:
         action_classes:
             install: anvil.components.glance_client:GlanceClientInstaller
@@ -575,7 +574,6 @@ components:
             version: 0.5*
         pips:
         -   name: cliff
-            version: 0.6
     quantum:
         action_classes:
             install: anvil.components.quantum:QuantumInstaller

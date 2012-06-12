@@ -60,8 +60,7 @@ commands:
         stop: service rabbitmq-server stop
         status: service rabbitmq-server status
         restart: service rabbitmq-server restart
-        change_password: rabbitmqctl change_password guest
-        redirect-outs: true
+        change_password: rabbitmqctl change_password
 components:
     db:
         action_classes:
@@ -171,6 +170,20 @@ components:
         -   name: wget
             removable: false
             version: 1.12*
+        # These 4 seem need for runtests/venv...
+        -   name: libldap2-dev
+            removable: false
+            version: 2.4*
+        -   name: libxslt1-dev
+            removable: false
+            version: 1.1*
+        -   name: libxml2-dev
+            removable: false
+            version: 2.7*
+        # Huh, gtk??
+        -   name: libgtk2.0-dev
+            removable: false
+            version: 2.2*
         pips:
         -   name: mock
             version: 0.8.0
@@ -180,13 +193,6 @@ components:
             running: anvil.components.glance:GlanceRuntime
             uninstall: anvil.components.glance:GlanceUninstaller
         packages:
-        # These 2 seem needed for .venv building
-        -   name: libxslt1-dev
-            removable: true
-            version: 1.1*
-        -   name: libxml2-dev
-            removable: true
-            version: 2.7*
         -   name: python-eventlet
             removable: true
             version: 0.9*
@@ -224,7 +230,7 @@ components:
         -   name: iso8601
             version: 0.1.4
         -   name: jsonschema
-            version: 0.2
+            version: "0.2"
     glance-client:
         action_classes:
             install: anvil.components.glance_client:GlanceClientInstaller
@@ -306,7 +312,7 @@ components:
         -   name: django-nose-selenium
             version: 0.7.3
         -   name: pycrypto
-            version: 2.3
+            version: "2.6"
         -   name: python-cloudfiles
             version: 1.7.9.3
     keystone:
@@ -315,9 +321,6 @@ components:
             running: anvil.components.keystone:KeystoneRuntime
             uninstall: anvil.components.keystone:KeystoneUninstaller
         packages:
-        -   name: libldap2-dev
-            removable: true
-            version: 2.4*
         -   name: libsasl2-dev
             removable: true
             version: 2.1*
@@ -603,7 +606,6 @@ components:
             version: 1.1*
         pips:
         -   name: cliff
-            version: 0.6
     quantum:
         action_classes:
             install: anvil.components.quantum:QuantumInstaller

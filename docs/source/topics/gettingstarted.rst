@@ -38,7 +38,7 @@ Networking
 Since networking can affect how your cloud runs please check out this
 link:
 
-http://docs.openstack.org/diablo/openstack-compute/admin/content/configuring-networking-on-the-compute-node.html
+http://docs.openstack.org/trunk/openstack-compute/admin/content/configuring-networking-on-the-compute-node.html
 
 Check out the root article and the sub-chapters there to understand more
 of what these settings mean.
@@ -119,6 +119,14 @@ Also to avoid qemu errors please follow the solution @ https://bugs.launchpad.ne
 which will ensure that the ``qemu`` user can write to your instances directory. If needed edit ``anvil.ini``
 and also adjust the ``instances_path`` option (under the ``nova`` section).
 
+This can be typically solved by running the following (and then updating ``anvil.ini``):
+
+::
+
+    $ sudo mkdir -pv /home/openstack
+    $ sudo chmod -R a+rwx /home/openstack
+
+
 **For Ubuntu:**
 
 You are off the hook.
@@ -165,11 +173,11 @@ We’ll grab the latest version of ANVIL via git:
 
     $ git clone git://github.com/yahoo/Openstack-Anvil.git anvil
 
-Now setup the prerequisites needed to run:
+Now setup the prerequisites needed to run (select the appropriate shell script for your distro):
 
 ::
 
-    $ cd anvil && sudo ./warmup.sh
+    $ cd anvil/warmups && sudo ./$DISTRO.sh
 
 Configuration
 -------------
@@ -250,6 +258,10 @@ If you need to adjust those variables the matching config variables in ``anvil.i
     test_floating_range = ${TEST_FLOATING_RANGE:-192.168.253.0/29}
 
 
+If you are using a ``FlatManager`` and RH/Fedora then you might want read and follow:
+
+http://www.techotopia.com/index.php/Creating_an_RHEL_5_KVM_Networked_Bridge_Interface
+    
 Installing
 ----------
 

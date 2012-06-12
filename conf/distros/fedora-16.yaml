@@ -51,12 +51,11 @@ commands:
     # actual location.
     base_link_dir: "/etc/"
     rabbit-mq:
-        change_password: rabbitmqctl change_password guest
+        change_password: rabbitmqctl change_password
         restart: service rabbitmq-server restart
         start: service rabbitmq-server start
         status: service rabbitmq-server status
         stop: service rabbitmq-server stop
-        redirect-outs: true
 components:
     db:
         action_classes:
@@ -201,7 +200,7 @@ components:
             version: 0.5*
         pips:
         -   name: jsonschema
-            version: 0.2
+            version: "0.2"
     glance-client:
         action_classes:
             install: anvil.components.glance_client:GlanceClientInstaller
@@ -279,7 +278,7 @@ components:
             version: 0.5*
         pips:
         -   name: django
-            version: 1.4
+            version: "1.4"
     keystone:
         action_classes:
             install: anvil.components.keystone:KeystoneInstaller
@@ -569,7 +568,6 @@ components:
             version: 0.5*
         pips:
         -   name: cliff
-            version: 0.6
     quantum:
         action_classes:
             install: anvil.components.quantum:QuantumInstaller

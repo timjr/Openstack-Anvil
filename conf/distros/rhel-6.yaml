@@ -50,13 +50,17 @@ commands:
     # under this directory where its configuration files will be connected to there
     # actual location.
     base_link_dir: "/etc/"
+    qpid:
+        status: service qpidd status
+        start: service qpidd start
+        restart: service qpidd restart
+        stop: service qpidd stop
     rabbit-mq:
-        change_password: rabbitmqctl change_password guest
+        change_password: rabbitmqctl change_password
         restart: service rabbitmq-server restart
         start: service rabbitmq-server start
         status: service rabbitmq-server status
         stop: service rabbitmq-server stop                 
-        redirect-outs: true
 components:
     db:
         action_classes:
@@ -205,9 +209,9 @@ components:
             version: 0.1.4
         -   name: pycrypto
             options: --upgrade
-            version: '2.5'
+            version: '2.6'
         -   name: jsonschema
-            version: 0.2
+            version: "0.2"
     glance-client:
         action_classes:
             install: anvil.components.glance_client:GlanceClientInstaller
@@ -263,7 +267,7 @@ components:
         -   name: SQLAlchemy
             version: 0.7.5
         -   name: django
-            version: 1.4
+            version: "1.4"
         -   name: django-mailer
             version: 0.1.0
         -   name: django-nose
@@ -276,7 +280,7 @@ components:
             version: 1.1.2
         -   name: pycrypto
             options: --upgrade
-            version: '2.5'
+            version: '2.6'
         -   name: python-cloudfiles
             version: 1.7.9.3
         -   name: sqlalchemy-migrate
@@ -346,7 +350,7 @@ components:
             version: '0.2'
         -   name: pycrypto
             options: --upgrade
-            version: '2.5'
+            version: '2.6'
         -   name: sqlalchemy-migrate
             version: 0.7.2
     keystone-client:
@@ -463,6 +467,9 @@ components:
         -   name: sqlite
             removable: false
             version: 3.6*
+        -   name: vconfig
+            removable: true
+            version: 1.9*
         pips:
         -   name: Paste
             version: 1.7.5.1
@@ -481,7 +488,7 @@ components:
             version: 0.1.4
         -   name: pycrypto
             options: --upgrade
-            version: '2.5'
+            version: '2.6'
         -   name: sqlalchemy-migrate
             version: 0.7.2
         subsystems:
@@ -562,7 +569,15 @@ components:
             version: 1.2*
         pips:
         -   name: cliff
-            version: 0.6
+    qpid:
+        action_classes:
+            install: anvil.components.qpid:QpidInstaller
+            running: anvil.components.qpid:QpidRuntime
+            uninstall: anvil.components.qpid:QpidUninstaller
+        packages:
+        -   name: qpid-cpp-server
+            removable: false
+            version: 0.14*
     quantum:
         action_classes:
             install: anvil.components.quantum:QuantumInstaller

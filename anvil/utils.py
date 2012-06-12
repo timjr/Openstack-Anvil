@@ -29,7 +29,9 @@ from urlparse import urlunparse
 
 import netifaces
 import progressbar
+import yaml
 
+from anvil import constants
 from anvil import colorizer
 from anvil import date
 from anvil import exceptions as excp
@@ -47,7 +49,7 @@ EXT_COMPONENT = re.compile(r"^\s*([\w-]+)(?:\((.*)\))?\s*$")
 MONTY_PYTHON_TEXT_RE = re.compile("([a-z0-9A-Z\?!.,'\"]+)")
 DEF_IP = "127.0.0.1"
 IP_LOOKER = '8.8.8.8'
-DEF_IP_VERSION = settings.IPV4
+DEF_IP_VERSION = constants.IPV4
 STAR_VERSION = 0
 
 # Thx cowsay
@@ -74,14 +76,14 @@ LOG = logging.getLogger(__name__)
 
 
 def make_bool(val):
-    if not val:
-        return False
     if type(val) is bool:
         return val
     sval = str(val).lower().strip()
     if sval in ['true', '1', 'on', 'yes', 't']:
         return True
-    return False
+    if sval in ['0', 'false', 'off', 'no', 'f', '']:
+        return False
+    raise TypeError("Unable to convert %r to a boolean" % (val))
 
 
 def add_header(fn, contents):
@@ -106,8 +108,9 @@ def make_url(scheme, host, port=None,
     netloc = ''
     if host:
         netloc = str(host)
+
     if port is not None:
-        netloc += ":%s" % (port)
+        netloc += ":" + "%s" % (port)
 
     pieces.append(netloc or '')
     pieces.append(path or '')
@@ -196,17 +199,6 @@ def to_bytes(text):
     return byte_val
 
 
-def mark_unexecute_file(fn, kvs, comment_start='#'):
-    add_lines = list()
-    add_lines.append('')
-    add_lines.append(comment_start + ' Ran on %s by %s' % (date.rcf8222date(), sh.getuser()))
-    add_lines.append(comment_start + ' With data:')
-    for (k, v) in kvs.items():
-        add_lines.append(comment_start + ' %s => %s' % (k, v))
-    sh.append_file(fn, joinlinesep(*add_lines))
-    sh.chmod(fn, 0644)
-
-
 def log_iterable(to_log, header=None, logger=None, do_color=True):
     if not to_log:
         return
@@ -243,11 +235,11 @@ def progress_bar(name, max_am, reverse=False):
 
 
 @contextlib.contextmanager
-def tempdir():
+def tempdir(**kwargs):
     # This seems like it was only added in python 3.2
     # Make it since its useful...
     # See: http://bugs.python.org/file12970/tempdir.patch
-    tdir = tempfile.mkdtemp()
+    tdir = tempfile.mkdtemp(**kwargs)
     try:
         yield tdir
     finally:
@@ -311,7 +303,7 @@ def get_host_ip():
         ip = addr
     except socket.error:
         pass
-    # Ettempt to find it
+    # Attempt to find it
     if not ip:
         interfaces = get_interfaces()
         for (_, net_info) in interfaces.items():
@@ -335,11 +327,11 @@ def get_interfaces():
         ip6 = interface_addresses.get(netifaces.AF_INET6)
         if ip6:
             # Just take the first
-            interface_info[settings.IPV6] = ip6[0]
+            interface_info[constants.IPV6] = ip6[0]
         ip4 = interface_addresses.get(netifaces.AF_INET)
         if ip4:
             # Just take the first
-            interface_info[settings.IPV4] = ip4[0]
+            interface_info[constants.IPV4] = ip4[0]
         # Note: there are others but this is good for now..
         interfaces[intfc] = interface_info
     return interfaces
@@ -367,6 +359,8 @@ def param_replace_list(values, replacements, ignore_missing=False):
     for v in values:
         if v is not None:
             new_values.append(param_replace(str(v), replacements, ignore_missing))
+        else:
+            new_values.append(v)
     return new_values
 
 
@@ -384,6 +378,39 @@ def find_params(text):
 
     PARAM_SUB_REGEX.sub(finder, text)
     return params_found
+
+
+def prettify_yaml(obj):
+    formatted = yaml.dump(obj,
+                    line_break="\n",
+                    indent=4,
+                    explicit_start=True,
+                    explicit_end=True,
+                    default_flow_style=False,
+                    )
+    return formatted
+
+
+def param_replace_deep(root, replacements, ignore_missing=False):
+    if isinstance(root, list):
+        new_list = []
+        for v in root:
+            new_list.append(param_replace_deep(v, replacements, ignore_missing))
+        return new_list
+    elif isinstance(root, basestring):
+        return param_replace(root, replacements, ignore_missing)
+    elif isinstance(root, dict):
+        mapped_dict = {}
+        for (k, v) in root.items():
+            mapped_dict[k] = param_replace_deep(v, replacements, ignore_missing)
+        return mapped_dict
+    elif isinstance(root, set):
+        mapped_set = set()
+        for v in root:
+            mapped_set.add(param_replace_deep(v, replacements, ignore_missing))
+        return mapped_set
+    else:
+        return root
 
 
 def param_replace(text, replacements, ignore_missing=False):
@@ -700,7 +727,7 @@ def goodbye(worked):
     print(msg)
 
 
-def welcome(prog_name=settings.PROG_NAME.upper(), version_text=version.version_string()):
+def welcome(prog_name=constants.PROG_NAME.upper(), version_text=version.version_string()):
     lower = "| %s |" % (version_text)
     welcome_header = _get_welcome_stack()
     max_line_len = len(max(welcome_header.splitlines(), key=len))

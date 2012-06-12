@@ -14,7 +14,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
 from anvil import colorizer
 from anvil import log
 
@@ -26,7 +25,14 @@ LOG = log.getLogger(__name__)
 
 
 class StartAction(base.Action):
-    NAME = 'running'
+
+    @staticmethod
+    def get_lookup_name():
+        return 'running'
+
+    @staticmethod
+    def get_action_name():
+        return 'start'
 
     def _run(self, persona, component_order, instances):
         self._run_phase(
@@ -51,7 +57,7 @@ class StartAction(base.Action):
             )
         self._run_phase(
             PhaseFunctors(
-                start=lambda i: LOG.info('Starting %s.', i.component_name),
+                start=lambda i: LOG.info('Starting %s.', i.name),
                 run=lambda i: i.start(),
                 end=lambda i, result: LOG.info("Start %s applications", colorizer.quote(result)),
             ),
@@ -61,7 +67,7 @@ class StartAction(base.Action):
             )
         self._run_phase(
             PhaseFunctors(
-                start=lambda i: LOG.info('Post-starting %s.', colorizer.quote(i.component_name)),
+                start=lambda i: LOG.info('Post-starting %s.', colorizer.quote(i.name)),
                 run=lambda i: i.post_start(),
                 end=None,
             ),
@@ -69,3 +75,5 @@ class StartAction(base.Action):
             instances,
             "Post-start",
             )
+        # Knock off anything connected to stopping
+        self._delete_phase_files(['stop'])
