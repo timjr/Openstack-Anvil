@@ -96,6 +96,14 @@ def parse():
                           )
     parser.add_option_group(base_group)
 
+    # Stop and start take an optional list of subsystems
+    stop_start_group = OptionGroup(parser, "Start & stop specific options")
+    stop_start_group.add_option("-s", "--subsystem",
+        action="store",
+        dest="subsystem",
+        help="start or stop a particular component")
+    parser.add_option_group(stop_start_group)
+    
     # Uninstall and stop options
     stop_un_group = OptionGroup(parser, "Uninstall & stop specific options")
     stop_un_group.add_option("-n", "--no-force",
@@ -127,5 +135,6 @@ def parse():
     output['verbosity'] = len(options.verbosity)
     output['cli_overrides'] = options.cli_overrides or list()
     output['prompt_for_passwords'] = options.prompt_for_passwords
+    output['subsystem'] = options.subsystem
 
     return output
