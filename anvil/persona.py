@@ -83,16 +83,3 @@ class Persona(object):
             if not distro.known_component(c):
                 raise RuntimeError("Distro %r does not support component %r" %
                                         (d_name, c))
-
-    def subset(self, component):
-        """Limit the persona to a particular component"""
-        if not component in self.wanted_components:
-            LOG.error("Component not in persona: " + component + ".  Choose from: " +
-                      ", ".join(self.wanted_components))
-            raise RuntimeError("Unknown component: " + component)
-        self.wanted_components = [component]
-        if component in self.wanted_subsystems:
-            self.wanted_subsystems = { component: self.wanted_subsystems[component] }
-        else:
-            self.wanted_subsystems = {}
-

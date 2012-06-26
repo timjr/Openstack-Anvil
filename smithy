@@ -190,9 +190,6 @@ def run(args):
     # Params for the runner...
     dist = distro.Distro.get_current()
     persona_inst = load_verify_persona(persona_fn, dist)
-    subsystem = args.pop("subsystem")
-    if subsystem:
-        persona_inst.subset(subsystem)
     config = establish_config(args)
 
     runner_cls = actions.get_action_class(action)
@@ -243,7 +240,7 @@ def construct_log_level(verbosity_level, dry_run=False):
 
 def main():
     """
-    Starts the execution of anvil without
+    Starts the execution of without
     injecting variables into the global namespace. Ensures that
     logging is setup and that sudo access is available and in-use.
 
