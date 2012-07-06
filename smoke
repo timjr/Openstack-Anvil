@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+
+import sys
+import util
+
+from anvil import log as logging
+from anvil import shell as sh
+from anvil import utils
+
+LOG = logging.getLogger()
+
+def main():
+    """
+    Do a smoke test by setting up a yroot and running anvil in it.
+    """
+    # reinstall yroot image because it might be screwed
+    sh.execute('yinst', 'install', 'yroot_image_rhel_6_2_20120514',
+               '-live', '-same', '-yes')
+    # clean up openstack networking stuff
+    # create the yroot
+    # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
+    # install git
+    # mkdir /home/openstack
+    # clone anvil into /home/openstack
+    # tweak anvil.ini appropriately
+    # run anvil install with -y (or whatever), -d /home/openstack
+    # run anvil start
+    # now shell commands should also have context from core.rc and euca.rc
+    # run euca-describe-images and check output for sanity
+    # run euca-add-keys -k mykey
+    # run euca-run-instances -t ami-3 -k mykey
+    # run euca-describe-instances and sleep in a loop until the instance is running
+    # time out if the instances isn't running after a while
+    # grab the IP address from nova list
+    # ssh root@instance -k mykey
+    # check uptime
+    # if everything went OK, delete the yroot
+    # clean up networking stuff left over
+    
+
+if __name__ == '__main__':
+    sys.exit(main())
