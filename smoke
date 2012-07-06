@@ -52,7 +52,7 @@ def main():
     # run warmup.sh
     run_in_yroot('warmups/rhel6.sh')
     # run anvil install with -y (or whatever), -d /home/openstack
-    run_in_yroot('smithy', '-d', '/home/openstack', '--no-prompt-passwords',
+    run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
                  '-a', 'install')
     # run anvil start
     # now shell commands should also have context from core.rc and euca.rc
