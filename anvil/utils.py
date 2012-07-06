@@ -29,6 +29,9 @@ from urlparse import urlunparse
 
 try:
     import netifaces
+except:
+    pass
+
 import progressbar
 import yaml
 
