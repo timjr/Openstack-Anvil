@@ -18,8 +18,13 @@ import random as rand
 import re
 import sys
 
-import termcolor
-
+try:
+    import termcolor
+except ImportError:
+    class TermColor:
+        COLORS = {'red': 31}
+        def colored(txt, *args):
+            return txt
 
 COLORS = termcolor.COLORS.keys()
 

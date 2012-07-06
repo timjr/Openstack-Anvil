@@ -29,8 +29,7 @@ import time
 
 from anvil import env
 from anvil import exceptions as excp
-#from anvil import log as logging
-import logging
+from anvil import log as logging
 
 LOG = logging.getLogger(__name__)
 
