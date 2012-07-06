@@ -44,15 +44,16 @@ def main():
     # mkdir /home/openstack
     run_in_yroot('mkdir', '/home/openstack')
     run_in_yroot('chmod', '777', '/home/openstack')
+    os.chdir('/home/openstack')
     # clone anvil into /home/openstack
-    run_in_yroot('git', 'clone', 'git://github.com/yahoo/Openstack-Anvil.git',
-                 '/home/openstack/Openstack-Anvil')
+    run_in_yroot('git', 'clone', 'git://github.com/yahoo/Openstack-Anvil.git')
+    os.chdir('Openstack-Anvil')
     # tweak anvil.ini appropriately
     # run warmup.sh
-    run_in_yroot('/home/openstack/Openstack-Anvil/warmups/rhel6.sh')
+    run_in_yroot('warmups/rhel6.sh')
     # run anvil install with -y (or whatever), -d /home/openstack
-    run_in_yroot('/home/openstack/Openstack-Anvil/smithy', '-d',
-                 '/home/openstack', '--no-prompt-passwords', '-a', 'install')
+    run_in_yroot('smithy', '-d', '/home/openstack', '--no-prompt-passwords',
+                 '-a', 'install')
     # run anvil start
     # now shell commands should also have context from core.rc and euca.rc
     # run euca-describe-images and check output for sanity
