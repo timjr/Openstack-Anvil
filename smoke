@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
+import logging
 import sys
 
-from anvil import log as logging
 from anvil import shell as sh
 from anvil import utils
 
