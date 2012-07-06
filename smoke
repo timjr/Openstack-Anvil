@@ -32,9 +32,9 @@ def main():
     run('yroot', '--create', 'smoke', '6.2-20120514')
     # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
     # install git
-    run_in_yroot('yum', 'install', 'git')
+    run_in_yroot('yum', 'install', 'git', '-y')
     # update the world
-    run_in_yroot('yum', 'update')
+    run_in_yroot('yum', 'update', '-y')
     # mkdir /home/openstack
     run_in_yroot('mkdir', '/home/openstack')
     # clone anvil into /home/openstack
