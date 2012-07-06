@@ -27,7 +27,8 @@ import tempfile
 import distutils.version
 from urlparse import urlunparse
 
-import netifaces
+try:
+    import netifaces
 import progressbar
 import yaml
 
