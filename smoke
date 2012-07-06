@@ -14,7 +14,7 @@ def main():
     """
     # reinstall yroot image because it might be screwed
     sh.execute('yinst', 'install', 'yroot_image_rhel_6_2_20120514',
-               '-live', '-same', '-yes')
+               '-live', '-same', '-yes', stdout_fh=1, stderr_fh=2)
     # clean up openstack networking stuff
     # create the yroot
     # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
