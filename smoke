@@ -17,8 +17,7 @@ def run(*cmd, **kwargs):
 
 def run_in_yroot(*cmd, **kwargs):
     # sucks to pass the command as a string...
-    cmd_str = "'" + ' '.join(cmd) + "'"
-    return run('yroot', 'smoke', '--cmd', cmd_str, **kwargs)
+    return run('yroot', 'smoke', '--cmd', ' '.join(cmd), **kwargs)
 
 def main():
     """
