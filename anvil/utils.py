@@ -29,11 +29,11 @@ from urlparse import urlunparse
 
 try:
     import netifaces
+    import progressbar
+    import yaml
 except:
     pass
 
-import progressbar
-import yaml
 
 from anvil import constants
 from anvil import colorizer
