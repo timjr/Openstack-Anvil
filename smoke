@@ -3,6 +3,7 @@
 import logging
 import sys
 
+from anvil import log as logging
 from anvil import shell as sh
 from anvil import utils
 
@@ -12,6 +13,7 @@ def main():
     """
     Do a smoke test by setting up a yroot and running anvil in it.
     """
+    logging.setuplogging(logging.AUDIT)
     # reinstall yroot image because it might be screwed
     sh.execute('yinst', 'install', 'yroot_image_rhel_6_2_20120514',
                '-live', '-same', '-yes', stdout_fh=1, stderr_fh=2)
