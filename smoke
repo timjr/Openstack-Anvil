@@ -16,7 +16,10 @@ def run(*cmd, **kwargs):
     return sh.execute(*cmd, **kwargs)
 
 def run_in_yroot(*cmd, **kwargs):
-    return run('yroot', 'smoke', '--cmd', "'", *cmd, "'", **kwargs)
+    quoted_cmd = ["'"]
+    quoted_cmd.extend(cmd)
+    quoted_cmd.append("'")
+    return run('yroot', 'smoke', '--cmd', *quoted_cmd, **kwargs)
 
 def main():
     """
