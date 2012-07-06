@@ -30,6 +30,8 @@ def main():
     # clean up openstack networking stuff (reboot?)
     # create the yroot
     run('yroot', '--create', 'smoke', '6.2-20120514')
+    # now that we've got the yroot, fix it up a little
+    run('cp', '/etc/sysconfig/network', '/home/y/var/yroots/smoke/etc/sysconfig/')
     # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
     # install git
     run_in_yroot('yum', 'install', 'git', '-y')
@@ -43,7 +45,7 @@ def main():
     # hm, wish I could use cwd=, but, yroot...
     # tweak anvil.ini appropriately
     # run warmup.sh
-    run_in_yroot('/home/openstack/Openstack-Anvil/tools/warmup.sh')
+    run_in_yroot('/home/openstack/Openstack-Anvil/warmups/rhel6.sh')
     # run anvil install with -y (or whatever), -d /home/openstack
     run_in_yroot('/home/openstack/Openstack-Anvil/smithy', '-d', '/home/openstack', '--no-prompt-passwords', '-a', 'install')
     # chmod -R a+rw /home/openstack
