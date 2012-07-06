@@ -13,7 +13,10 @@ def run(*cmd, **kwargs):
     kwargs['run_as_root'] = kwargs.get('run_as_root', True)
     kwargs['stdout_fh'] = kwargs.get('stdout_fh', 1)
     kwargs['stderr_fh'] = kwargs.get('stderr_fh', 2)
-    sh.execute(*cmd, **kwargs)
+    return sh.execute(*cmd, **kwargs)
+
+def run_in_yroot(*cmd, **kwargs):
+    return run('yroot', 'smoke', '--cmd', "'", *cmd, "'", **kwargs)
 
 def main():
     """
@@ -28,10 +31,14 @@ def main():
     run('yroot', '--create', 'smoke', '6.2-20120514')
     # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
     # install git
+    run_in_yroot('echo', '$YROOT_NAME')
+    # yum update
     # mkdir /home/openstack
     # clone anvil into /home/openstack
     # tweak anvil.ini appropriately
+    # run warmup.sh
     # run anvil install with -y (or whatever), -d /home/openstack
+    # chmod -R a+rw /home/openstack
     # run anvil start
     # now shell commands should also have context from core.rc and euca.rc
     # run euca-describe-images and check output for sanity
@@ -43,7 +50,9 @@ def main():
     # ssh root@instance -k mykey
     # check uptime
     # if everything went OK, delete the yroot
+    # run('yroot', '--remove', 'smoke')
     # clean up networking stuff left over
+    # run('reboot')
     
 
 if __name__ == '__main__':
