@@ -25,6 +25,7 @@ except ImportError:
         COLORS = {'red': 31}
         def colored(txt, *args):
             return txt
+    termcolor = TermColor()
 
 COLORS = termcolor.COLORS.keys()
 
