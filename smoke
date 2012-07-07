@@ -46,7 +46,8 @@ def main():
     run_in_yroot('chmod', '777', '/home/openstack')
     os.chdir('/home/openstack')
     # clone anvil into /home/openstack
-    run_in_yroot('git', 'clone', 'git://github.com/yahoo/Openstack-Anvil.git')
+    run_in_yroot('git', 'clone', 'git://github.com/yahoo/Openstack-Anvil.git',
+                 run_as_root=False)
     os.chdir('Openstack-Anvil')
     # tweak anvil.ini appropriately
     # run warmup.sh
