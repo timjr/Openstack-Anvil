@@ -34,6 +34,8 @@ def main():
     run('yroot', '--create', 'smoke', '6.2-20120514')
     # now that we've got the yroot, fix it up a little
     run('cp', '/etc/sysconfig/network', '/home/y/var/yroots/smoke/etc/sysconfig/')
+    # grab this patch before chroot'ing...
+    run('cp', 'patches/foo.patch', '/home/y/var/yroots/smoke/tmp')
     LOG.info('chrooting to /home/y/var/yroots/smoke');
     os.chroot('/home/y/var/yroots/smoke')
     # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
@@ -53,6 +55,17 @@ def main():
     # run warmup.sh
     run_in_yroot('warmups/rhel6.sh')
     # run anvil install with -y (or whatever), -d /home/openstack
+    # the first run fails, but at least it checks out the code
+    run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
+                 '-a', 'install', ignore_failure=True)
+    # patch the code:
+    os.chdir('/home/openstack/nova/app/nova')
+    run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
+    os.chdir('/home/openstack/keystone/app/keystone')
+    run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
+    os.chdir('/home/openstack/horizon/app/horizon')
+    run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
+    # do anvil install again, but don't ignore failure this time:
     run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
                  '-a', 'install')
     # run anvil start

@@ -1,0 +1,20 @@
+diff --git a/nova/openstack/common/jsonutils.py b/nova/openstack/common/jsonutils.py
+index 7522669..8f51136 100644
+--- a/nova/openstack/common/jsonutils.py
++++ b/nova/openstack/common/jsonutils.py
+@@ -129,6 +129,8 @@ def dumps(value, default=to_primitive, **kwargs):
+ def loads(s):
+     return json.loads(s)
+ 
++def load(s):
++    return json.load(s)
+ 
+ try:
+     import anyjson
+@@ -136,5 +138,5 @@ except ImportError:
+     pass
+ else:
+     anyjson._modules.append((__name__, 'dumps', TypeError,
+-                                       'loads', ValueError))
++                                       'loads', ValueError, 'load'))
+     anyjson.force_implementation(__name__)
