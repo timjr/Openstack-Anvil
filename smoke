@@ -57,7 +57,7 @@ def main():
     # run anvil install with -y (or whatever), -d /home/openstack
     # the first run fails, but at least it checks out the code
     run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
-                 '-a', 'install', ignore_failure=True)
+                 '-a', 'install', ignore_exit_code=True)
     # actually, it's failing on some rabbitmq error that I don't get
     # patch the code:
     os.chdir('/home/openstack/nova/app/nova')
