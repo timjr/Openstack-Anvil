@@ -54,17 +54,6 @@ def main():
     # tweak anvil.ini appropriately
     # run warmup.sh
     run_in_yroot('warmups/rhel6.sh')
-    # # run anvil install with -y (or whatever), -d /home/openstack
-    # # the first run fails, but at least it checks out the code
-    # run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
-    #              '-a', 'install', ignore_failure=True)
-    # # patch the code:
-    # os.chdir('/home/openstack/nova/app/nova')
-    # run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
-    # os.chdir('/home/openstack/keystone/app/keystone')
-    # run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
-    # os.chdir('/home/openstack/horizon/app/horizon')
-    # run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
     # check if fixing rabbitmq perms fixes install failing on rabbitmq restart
     run_in_yroot('chmod', '777', '/var/log/rabbitmq')
     # # do anvil install again, but don't ignore failure this time:
