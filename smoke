@@ -21,11 +21,20 @@ def run_in_yroot(*cmd, **kwargs):
     assert(os.readlink('/.yroot') == '/home/y/var/yroots/smoke')
     run(*cmd, **kwargs)
 
+def patch(component):
+    fh = open('/tmp/foo.patch', 'r')
+    try:
+        run_in_yroot('patch', '-p', '2', '-d', '/home/openstack/' + component + '/app/' + component, stdin_fh=fh)
+    finally:
+        fh.close()
+
 def main():
     """
     Do a smoke test by setting up a yroot and running anvil in it.
     """
     logging.setupLogging(logging.AUDIT)
+    # install yroot package if needed
+    run('yinst', 'install', 'yroot')
     # reinstall yroot image because it might be screwed
     run('yinst', 'install', 'yroot_image_rhel_6_2_20120514', '-live',
         '-same', '-yes')
@@ -37,6 +46,11 @@ def main():
     # grab this patch before chroot'ing...
     run('cp', 'patches/foo.patch', '/home/y/var/yroots/smoke/tmp')
     LOG.info('chrooting to /home/y/var/yroots/smoke');
+    # mount proc, sys, dev, devpts (lifted from /home/y/libexec/perl5/site_perl/Yahoo/Root.pm)
+    run('mount', '-t', 'proc', 'proc', '/home/y/var/yroots/smoke/proc')
+    run('mount', '-t', 'sysfs', 'sysfs', '/home/y/var/yroots/smoke/sys')
+    run('mount', '--bind', '/dev', '/home/y/var/yroots/smoke/dev')
+    run('mount', '-t', 'devpts', 'none', '/home/y/var/yroots/smoke/dev/pts')
     os.chroot('/home/y/var/yroots/smoke')
     # we need to be able to run commands in the yroot... make a context for that, or just hop in there and stay for a while?  it won't be able to chroot the current process, is the thing.
     # install git
@@ -51,24 +65,19 @@ def main():
     run_in_yroot('git', 'clone', 'git://github.com/yahoo/Openstack-Anvil.git',
                  run_as_root=False)
     os.chdir('Openstack-Anvil')
-    # tweak anvil.ini appropriately
+    # use branch stable/essex for horizon because master gives django error at the moment
+    run_in_yroot('sed', '-i', 's/\(horizon_branch = \)master/\\1stable\/essex/', 'conf/anvil.ini')
     # run warmup.sh
     run_in_yroot('warmups/rhel6.sh')
-    # run anvil install with -y (or whatever), -d /home/openstack
-    # the first run fails, but at least it checks out the code
+    # do anvil install and ignore failure because unpatched db syncs will fail
     run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
                  '-a', 'install', ignore_exit_code=True)
-    # actually, it's failing on some rabbitmq error that I don't get
-    # patch the code:
-    os.chdir('/home/openstack/nova/app/nova')
-    run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
-    os.chdir('/home/openstack/keystone/app/keystone')
-    run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
-    os.chdir('/home/openstack/horizon/app/horizon')
-    run_in_yroot('patch', '-p2', stdin='/tmp/foo.patch')
+    # will fail initially without patch applied so apply
+    patch('keystone')
+    patch('nova')
+    # horizon stable/essex lacks the jsonutils.py file so don't patch
+    #patch('horizon')
 
-    # check if fixing rabbitmq perms fixes install failing on rabbitmq restart
-    #run_in_yroot('chmod', '777', '/var/log/rabbitmq')
     # do anvil install again, but don't ignore failure this time:
     os.chdir('/home/openstack/Openstack-Anvil')
     run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
@@ -87,7 +96,7 @@ def main():
     # run('yroot', '--remove', 'smoke')
     # clean up networking stuff left over
     # run('reboot')
-    
+
 
 if __name__ == '__main__':
     sys.exit(main())
