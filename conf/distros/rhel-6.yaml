@@ -192,9 +192,6 @@ components:
         -   name: python-httplib2
             removable: true
             version: 0.7*
-        -   name: python-prettytable
-            removable: true
-            version: 0.5*
         -   name: pyxattr
             removable: true
             version: 0.5*
@@ -212,6 +209,9 @@ components:
             version: '2.6'
         -   name: jsonschema
             version: "0.2"
+        -   name: python-prettytable
+            removable: true
+            version: 0.6*
     glance-client:
         action_classes:
             install: anvil.components.glance_client:GlanceClientInstaller
@@ -221,9 +221,10 @@ components:
         -   name: python-argparse
             removable: true
             version: 1.2*
+        pips:
         -   name: python-prettytable
             removable: true
-            version: 0.5*
+            version: 0.6*
     horizon:
         action_classes:
             install: anvil.distros.rhel6:HorizonInstaller
@@ -318,9 +319,6 @@ components:
         -   name: python-passlib
             removable: true
             version: 1.5*
-        -   name: python-prettytable
-            removable: true
-            version: 0.5*
         -   name: python-sqlite2
             removable: true
             version: 2.3*
@@ -351,6 +349,9 @@ components:
         -   name: pycrypto
             options: --upgrade
             version: '2.6'
+        -   name: python-prettytable
+            removable: true
+            version: 0.6*
         -   name: sqlalchemy-migrate
             version: 0.7.2
     keystone-client:
@@ -362,9 +363,10 @@ components:
         -   name: python-argparse
             removable: true
             version: 1.2*
+        pips:
         -   name: python-prettytable
             removable: true
-            version: 0.5*
+            version: 0.6*
     melange:
         action_classes:
             install: anvil.components.melange:MelangeInstaller
@@ -549,9 +551,10 @@ components:
         -   name: python-argparse
             removable: true
             version: 1.2*
+        pips:
         -   name: python-prettytable
             removable: true
-            version: 0.5*
+            version: 0.6*
     openstack-client:
         action_classes:
             install: anvil.components.openstack_client:OpenStackClientInstaller
@@ -561,14 +564,14 @@ components:
         -   name: python-httplib2
             removable: true
             version: 0.7*
-        -   name: python-prettytable
-            removable: true
-            version: 0.5*
         -   name: python-argparse
             removable: true
             version: 1.2*
         pips:
         -   name: cliff
+        -   name: python-prettytable
+            removable: true
+            version: 0.6*
     qpid:
         action_classes:
             install: anvil.components.qpid:QpidInstaller
