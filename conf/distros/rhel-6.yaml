@@ -211,7 +211,7 @@ components:
             version: "0.2"
         -   name: python-prettytable
             removable: true
-            version: 0.6*
+            version: 0.6
     glance-client:
         action_classes:
             install: anvil.components.glance_client:GlanceClientInstaller
@@ -224,7 +224,7 @@ components:
         pips:
         -   name: python-prettytable
             removable: true
-            version: 0.6*
+            version: 0.6
     horizon:
         action_classes:
             install: anvil.distros.rhel6:HorizonInstaller
@@ -351,7 +351,7 @@ components:
             version: '2.6'
         -   name: python-prettytable
             removable: true
-            version: 0.6*
+            version: 0.6
         -   name: sqlalchemy-migrate
             version: 0.7.2
     keystone-client:
@@ -366,7 +366,7 @@ components:
         pips:
         -   name: python-prettytable
             removable: true
-            version: 0.6*
+            version: 0.6
     melange:
         action_classes:
             install: anvil.components.melange:MelangeInstaller
@@ -554,7 +554,7 @@ components:
         pips:
         -   name: python-prettytable
             removable: true
-            version: 0.6*
+            version: 0.6
     openstack-client:
         action_classes:
             install: anvil.components.openstack_client:OpenStackClientInstaller
@@ -571,7 +571,7 @@ components:
         -   name: cliff
         -   name: python-prettytable
             removable: true
-            version: 0.6*
+            version: 0.6
     qpid:
         action_classes:
             install: anvil.components.qpid:QpidInstaller
