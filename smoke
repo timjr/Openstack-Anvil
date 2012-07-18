@@ -62,7 +62,7 @@ def main():
     run_in_yroot('chmod', '777', '/home/openstack')
     os.chdir('/home/openstack')
     # clone anvil into /home/openstack
-    run_in_yroot('git', 'clone', 'git://github.com/yahoo/Openstack-Anvil.git',
+    run_in_yroot('git', 'clone', '-b', 'smoke', 'git://github.com/timjr/Openstack-Anvil.git',
                  run_as_root=False)
     os.chdir('Openstack-Anvil')
     # use branch stable/essex for horizon because master gives django error at the moment
