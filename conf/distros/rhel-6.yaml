@@ -209,8 +209,7 @@ components:
             version: '2.6'
         -   name: jsonschema
             version: "0.2"
-        -   name: python-prettytable
-            removable: true
+        -   name: prettytable
             version: 0.6
     glance-client:
         action_classes:
@@ -222,8 +221,7 @@ components:
             removable: true
             version: 1.2*
         pips:
-        -   name: python-prettytable
-            removable: true
+        -   name: prettytable
             version: 0.6
     horizon:
         action_classes:
@@ -349,8 +347,7 @@ components:
         -   name: pycrypto
             options: --upgrade
             version: '2.6'
-        -   name: python-prettytable
-            removable: true
+        -   name: prettytable
             version: 0.6
         -   name: sqlalchemy-migrate
             version: 0.7.2
@@ -364,8 +361,7 @@ components:
             removable: true
             version: 1.2*
         pips:
-        -   name: python-prettytable
-            removable: true
+        -   name: prettytable
             version: 0.6
     melange:
         action_classes:
@@ -552,8 +548,7 @@ components:
             removable: true
             version: 1.2*
         pips:
-        -   name: python-prettytable
-            removable: true
+        -   name: prettytable
             version: 0.6
     openstack-client:
         action_classes:
@@ -569,8 +564,7 @@ components:
             version: 1.2*
         pips:
         -   name: cliff
-        -   name: python-prettytable
-            removable: true
+        -   name: prettytable
             version: 0.6
     qpid:
         action_classes:
