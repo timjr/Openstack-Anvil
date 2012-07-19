@@ -44,7 +44,7 @@ def main():
     # now that we've got the yroot, fix it up a little
     run('cp', '/etc/sysconfig/network', '/home/y/var/yroots/smoke/etc/sysconfig/')
     # grab this patch before chroot'ing...
-    run('cp', 'patches/foo.patch', '/home/y/var/yroots/smoke/tmp')
+    #run('cp', 'patches/foo.patch', '/home/y/var/yroots/smoke/tmp')
     LOG.info('chrooting to /home/y/var/yroots/smoke');
     # mount proc, sys, dev, devpts (lifted from /home/y/libexec/perl5/site_perl/Yahoo/Root.pm)
     run('mount', '-t', 'proc', 'proc', '/home/y/var/yroots/smoke/proc')
@@ -73,8 +73,8 @@ def main():
     run_in_yroot('./smithy', '-d', '/home/openstack', '--no-prompt-passwords',
                  '-a', 'install', ignore_exit_code=True)
     # will fail initially without patch applied so apply
-    patch('keystone')
-    patch('nova')
+    #patch('keystone')
+    #patch('nova')
     # horizon stable/essex lacks the jsonutils.py file so don't patch
     #patch('horizon')
 
