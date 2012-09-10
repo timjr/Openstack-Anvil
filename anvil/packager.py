@@ -19,66 +19,38 @@ import abc
 from anvil import colorizer
 from anvil import importer
 from anvil import log as logging
+from anvil import type_utils
 from anvil import utils
 
 LOG = logging.getLogger(__name__)
 
 
-class PackageRegistry(object):
-
-    def __init__(self):
-        self.installed = dict()
-        self.removed = dict()
-
-
 class Packager(object):
-
     __meta__ = abc.ABCMeta
 
-    def __init__(self, distro, registry):
+    def __init__(self, distro, remove_default=False):
         self.distro = distro
-        self.registry = registry
+        self.remove_default = remove_default
+
+    @abc.abstractmethod
+    def _anything_there(self, pkg):
+        raise NotImplementedError()
 
     def install(self, pkg):
-        name = pkg['name']
-        version = pkg.get('version')
-        skip_install = False
-        if name in self.registry.installed:
-            existing_version = self.registry.installed[name]
-            if version == existing_version:
-                LOG.debug("Skipping install of %r since it already happened.", name)
-                skip_install = True
-            else:
-                if existing_version is not None:
-                    if utils.versionize(existing_version) < utils.versionize(version):
-                        LOG.warn(("A request has come in for a 'potentially' newer version of %s v(%s),"
-                            " when v(%s) was previously installed!"), colorizer.quote(name), version, existing_version)
-                    elif utils.versionize(existing_version) > utils.versionize(version):
-                        LOG.warn(("A request has come in for a 'potentially' older version of %s v(%s), "
-                            "when v(%s) was previously installed!"), colorizer.quote(name), version, existing_version)
-                else:
-                    LOG.warn(("A request has come in for a 'potentially' different version of %s v(%s),"
-                        " when a unspecified version was previously installed!"), colorizer.quote(name), version)
-        if not skip_install:
+        installed_already = self._anything_there(pkg)
+        if not installed_already:
             self._install(pkg)
-            LOG.debug("Noting that %r - v(%s) was installed.", name, (version or "??"))
-            self.registry.installed[name] = version
-            if name in self.registry.removed:
-                del(self.registry.removed[name])
+            LOG.debug("Installed %s", pkg)
+        else:
+            LOG.debug("Skipping install of %r since %s is already there.", pkg['name'], installed_already)
 
     def remove(self, pkg):
-        removable = pkg.get('removable', True)
-        if not removable:
+        should_remove = self.remove_default
+        if 'removable' in pkg:
+            should_remove = type_utils.make_bool(pkg['removable'])
+        if not should_remove:
             return False
-        name = pkg['name']
-        if name in self.registry.removed:
-            LOG.debug("Skipping removal of %r since it already happened.", name)
-        else:
-            self._remove(pkg)
-            LOG.debug("Noting that %r was removed.", name)
-            self.registry.removed[name] = True
-            if name in self.registry.installed:
-                del(self.registry.installed[name])
+        self._remove(pkg)
         return True
 
     def pre_install(self, pkg, params=None):
@@ -95,43 +67,16 @@ class Packager(object):
 
     @abc.abstractmethod
     def _remove(self, pkg):
-        pass
+        raise NotImplementedError()
 
     @abc.abstractmethod
     def _install(self, pkg):
-        pass
+        raise NotImplementedError()
 
 
-class PackagerFactory(object):
-
-    PACKAGER_KEY_NAME = 'packager_name'
-
-    def __init__(self, distro, default_packager_cls):
-        self.default_packager = None
-        self.default_packager_cls = default_packager_cls
-        self.distro = distro
-        self.fetched_packagers = dict()
-        self.registry = PackageRegistry()
-
-    def _construct_pkger(self, cls):
-        return cls(self.distro, self.registry)
-
-    def _get_default_pkgr(self):
-        if not self.default_packager:
-            self.default_packager = self._construct_pkger(self.default_packager_cls)
-            LOG.debug('Loading default package manager %s', self.default_packager_cls)
-        return self.default_packager
-
-    def get_packager_for(self, pkg_info):
-        packager_name = pkg_info.get(self.PACKAGER_KEY_NAME)
-        if not packager_name or not packager_name.strip():
-            packager = self._get_default_pkgr()
-        else:
-            if packager_name in self.fetched_packagers:
-                packager = self.fetched_packagers[packager_name]
-            else:
-                packager_cls = importer.import_entry_point(packager_name)
-                LOG.debug('Loading custom package manager %s for package %r', packager_cls, pkg_info['name'])
-                packager = self._construct_pkger(packager_cls)
-                self.fetched_packagers[packager_name] = packager
-        return packager
+def get_packager_class(package_info, default_packager_class=None):
+    packager_name = package_info.get('packager_name') or ''
+    packager_name = packager_name.strip()
+    if not packager_name:
+        return default_packager_class
+    return importer.import_entry_point(packager_name)

@@ -15,47 +15,67 @@
 #    under the License.
 
 
-class StackException(Exception):
+class AnvilException(Exception):
     pass
 
 
-class InstallException(StackException):
+class OptionException(AnvilException):
     pass
 
 
-class BadParamException(StackException):
+class DownloadException(AnvilException):
     pass
 
 
-class NoTraceException(StackException):
+class InstallException(AnvilException):
     pass
 
 
-class NoReplacementException(StackException):
+class BadParamException(AnvilException):
     pass
 
 
-class StartException(StackException):
+class NoTraceException(AnvilException):
     pass
 
 
-class StopException(StackException):
+class NoReplacementException(AnvilException):
     pass
 
 
-class RestartException(StackException):
+class StartException(AnvilException):
     pass
 
 
-class StatusException(StackException):
+class PackageException(AnvilException):
     pass
 
 
-class FileException(StackException):
+class StopException(AnvilException):
     pass
 
 
-class ConfigException(StackException):
+class RestartException(AnvilException):
+    pass
+
+
+class StatusException(AnvilException):
+    pass
+
+
+class PasswordException(AnvilException):
+    pass
+
+
+class FileException(AnvilException):
+    pass
+
+
+class ConfigException(AnvilException):
+    pass
+
+
+class DependencyException(AnvilException):
     pass
 
 

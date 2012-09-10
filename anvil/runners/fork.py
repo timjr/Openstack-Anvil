@@ -16,13 +16,13 @@
 
 import json
 
-from anvil import constants
 from anvil import exceptions as excp
 from anvil import log as logging
+from anvil import runners as base
 from anvil import shell as sh
 from anvil import trace as tr
 
-from anvil.runners import base
+from anvil.components import (STATUS_STARTED, STATUS_UNKNOWN)
 
 LOG = logging.getLogger(__name__)
 
@@ -37,9 +37,6 @@ FORK_TEMPL = "%s.fork"
 
 
 class ForkRunner(base.Runner):
-    def __init__(self, runtime):
-        base.Runner.__init__(self, runtime)
-
     def stop(self, app_name):
         trace_dir = self.runtime.get_option('trace_dir')
         if not sh.isdir(trace_dir):
@@ -62,7 +59,7 @@ class ForkRunner(base.Runner):
                 sh.unlink(stderr_fn)
                 LOG.debug("Removing stdout file %r" % (stdout_fn))
                 sh.unlink(stdout_fn)
-                trace_fn = tr.trace_fn(trace_dir, fn_name)
+                trace_fn = tr.trace_filename(trace_dir, fn_name)
                 if sh.isfile(trace_fn):
                     LOG.debug("Removing %r trace file %r" % (app_name, trace_fn))
                     sh.unlink(trace_fn)
@@ -82,13 +79,23 @@ class ForkRunner(base.Runner):
     def status(self, app_name):
         trace_dir = self.runtime.get_option('trace_dir')
         if not sh.isdir(trace_dir):
-            return constants.STATUS_UNKNOWN
+            return (STATUS_UNKNOWN, '')
         (pid_file, stderr_fn, stdout_fn) = self._form_file_names(FORK_TEMPL % (app_name))
         pid = self._extract_pid(pid_file)
+        stderr = ''
+        try:
+            stderr = sh.load_file(stderr_fn)
+        except IOError:
+            pass
+        stdout = ''
+        try:
+            stdout = sh.load_file(stdout_fn)
+        except IOError:
+            pass
         if pid and sh.is_running(pid):
-            return constants.STATUS_STARTED
+            return (STATUS_STARTED, (stdout + stderr).strip())
         else:
-            return constants.STATUS_UNKNOWN
+            return (STATUS_UNKNOWN, (stdout + stderr).strip())
 
     def _form_file_names(self, file_name):
         trace_dir = self.runtime.get_option('trace_dir')
@@ -98,7 +105,7 @@ class ForkRunner(base.Runner):
 
     def _do_trace(self, fn, kvs):
         trace_dir = self.runtime.get_option('trace_dir')
-        run_trace = tr.TraceWriter(tr.trace_fn(trace_dir, fn))
+        run_trace = tr.TraceWriter(tr.trace_filename(trace_dir, fn))
         for (k, v) in kvs.items():
             run_trace.trace(k, v)
         return run_trace.filename()

@@ -15,7 +15,6 @@
 #    under the License.
 
 import errno
-import fileinput
 import getpass
 import grp
 import os
@@ -23,6 +22,7 @@ import pwd
 import resource
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -30,14 +30,10 @@ import time
 from anvil import env
 from anvil import exceptions as excp
 from anvil import log as logging
+from anvil import type_utils as tu
 
 LOG = logging.getLogger(__name__)
 
-ROOT_USER = "root"
-ROOT_GROUP = ROOT_USER
-ROOT_USER_UID = 0
-SUDO_UID = 'SUDO_UID'
-SUDO_GID = 'SUDO_GID'
 SHELL_QUOTE_REPLACERS = {
     "\"": "\\\"",
     "(": "\\(",
@@ -45,28 +41,9 @@ SHELL_QUOTE_REPLACERS = {
     "$": '\$',
     '`': '\`',
 }
-SHELL_WRAPPER = "\"%s\""
 ROOT_PATH = os.sep
-DRYRUN_MODE = False
-DRY_RC = 0
-DRY_STDOUT_ERR = ("", "")
-BOOL2STR = {
-    True: 'true',
-    False: 'false',
-}
 
 
-def set_dryrun(val):
-    global DRYRUN_MODE
-    if val:
-        LOG.debug("Setting dryrun to: %s" % (BOOL2STR.get(True)))
-        DRYRUN_MODE = True
-    else:
-        LOG.debug("Resetting dryrun to: %s" % (BOOL2STR.get(False)))
-        DRYRUN_MODE = False
-
-
-#root context guard
 class Rooted(object):
     def __init__(self, run_as_root):
         self.root_mode = run_as_root
@@ -74,7 +51,6 @@ class Rooted(object):
 
     def __enter__(self):
         if self.root_mode and not got_root():
-            LOG.debug("Engaging root mode")
             root_mode()
             self.engaged = True
         return self.engaged
@@ -82,8 +58,14 @@ class Rooted(object):
     def __exit__(self, type, value, traceback):
         if self.root_mode and self.engaged:
             user_mode()
-            LOG.debug("Disengaging root mode")
             self.engaged = False
+
+
+def is_dry_run():
+    dry_v = env.get_key('ANVIL_DRYRUN')
+    if not dry_v:
+        return False
+    return tu.make_bool(dry_v)
 
 
 def execute(*cmd, **kwargs):
@@ -109,21 +91,10 @@ def execute(*cmd, **kwargs):
         execute_cmd.append(str(c))
 
     # From the docs it seems a shell command must be a string??
-    # TODO: this might not really be needed?
+    # TODO(harlowja) this might not really be needed?
     str_cmd = " ".join(execute_cmd)
     if shell:
         execute_cmd = str_cmd.strip()
-
-    if not shell:
-        LOG.audit('Running cmd: %r' % (execute_cmd))
-    else:
-        LOG.audit('Running shell cmd: %r' % (execute_cmd))
-
-    if process_input is not None:
-        LOG.audit('With stdin: %s' % (process_input))
-
-    if cwd:
-        LOG.audit("In working directory: %r" % (cwd))
 
     stdin_fh = subprocess.PIPE
     stdout_fh = subprocess.PIPE
@@ -132,21 +103,26 @@ def execute(*cmd, **kwargs):
 
     if 'stdout_fh' in kwargs.keys():
         stdout_fh = kwargs.get('stdout_fh')
-        LOG.debug("Redirecting stdout to file handle: %s" % (stdout_fh))
 
     if 'stdin_fh' in kwargs.keys():
         stdin_fh = kwargs.get('stdin_fh')
-        LOG.debug("Redirecting stdin to file handle: %s" % (stdin_fh))
         process_input = None
 
     if 'stderr_fh' in kwargs.keys():
         stderr_fh = kwargs.get('stderr_fh')
-        LOG.debug("Redirecting stderr to file handle: %s" % (stderr_fh))
+
+    if not shell:
+        LOG.debug('Running cmd: %r' % (execute_cmd))
+    else:
+        LOG.debug('Running shell cmd: %r' % (execute_cmd))
+    if process_input is not None:
+        LOG.debug('With stdin: %s' % (process_input))
+    if cwd:
+        LOG.debug("In working directory: %r" % (cwd))
 
     process_env = None
     if env_overrides and len(env_overrides):
         process_env = env.get()
-        LOG.audit("With additional environment overrides: %s" % (env_overrides))
         for (k, v) in env_overrides.items():
             process_env[k] = str(v)
     else:
@@ -166,28 +142,19 @@ def execute(*cmd, **kwargs):
         if user_uid is None or user_gid is None:
             pass
         else:
-            LOG.audit("Running as (user=%s, group=%s)", user_uid, user_gid)
             demoter = demoter_functor(user_uid=user_uid, user_gid=user_gid)
-    else:
-        LOG.audit("Running as (user=%s, group=%s)", ROOT_USER_UID, ROOT_USER_UID)
 
     rc = None
     result = None
     with Rooted(run_as_root):
-        if DRYRUN_MODE:
-            rc = DRY_RC
-            result = DRY_STDOUT_ERR
+        if is_dry_run():
+            rc = 0
+            result = ('', '')
         else:
             try:
-                obj = subprocess.Popen(execute_cmd,
-                                       stdin=stdin_fh,
-                                       stdout=stdout_fh,
-                                       stderr=stderr_fh,
-                                       close_fds=close_file_descriptors,
-                                       cwd=cwd,
-                                       shell=shell,
-                                       preexec_fn=demoter,
-                                       env=process_env)
+                obj = subprocess.Popen(execute_cmd, stdin=stdin_fh, stdout=stdout_fh, stderr=stderr_fh,
+                                       close_fds=close_file_descriptors, cwd=cwd, shell=shell,
+                                       preexec_fn=demoter, env=process_env)
                 if process_input is not None:
                     result = obj.communicate(str(process_input))
                 else:
@@ -195,11 +162,9 @@ def execute(*cmd, **kwargs):
             except OSError as e:
                 raise excp.ProcessExecutionError(description="%s: [%s, %s]" % (e, e.errno, e.strerror),
                                                  cmd=str_cmd)
-            if (stdin_fh != subprocess.PIPE
-                and obj.stdin and close_stdin):
+            if (stdin_fh != subprocess.PIPE and obj.stdin and close_stdin):
                 obj.stdin.close()
             rc = obj.returncode
-        LOG.audit('Cmd result had exit code: %s' % rc)
 
     if not result:
         result = ("", "")
@@ -217,10 +182,7 @@ def execute(*cmd, **kwargs):
         # Log it anyway
         if rc not in check_exit_code:
             LOG.debug("A failure may of just happened when running command %r [%s] (%s, %s)",
-                       str_cmd, rc, stdout, stderr)
-        # Log for debugging figuring stuff out
-        LOG.debug("Received stdout: %s" % (stdout))
-        LOG.debug("Received stderr: %s" % (stderr))
+                      str_cmd, rc, stdout, stderr)
         # See if a requested storage place was given for stderr/stdout
         trace_writer = kwargs.get('trace_writer')
         stdout_fn = kwargs.get('stdout_fn')
@@ -244,6 +206,13 @@ def abspth(path):
     return os.path.abspath(path)
 
 
+def hostname():
+    try:
+        return socket.gethostname()
+    except socket.error:
+        return 'localhost'
+
+
 def isuseable(path, options=os.W_OK | os.R_OK | os.X_OK):
     return os.access(path, options)
 
@@ -264,7 +233,7 @@ def pipe_in_out(in_fh, out_fh, chunk_size=1024, chunk_cb=None):
 
 
 def shellquote(text):
-    # TODO since there doesn't seem to be a standard lib that actually works use this way...
+    # TODO(harlowja) find a better way - since there doesn't seem to be a standard lib that actually works
     do_adjust = False
     for srch in SHELL_QUOTE_REPLACERS.keys():
         if text.find(srch) != -1:
@@ -277,8 +246,12 @@ def shellquote(text):
         text.startswith((" ", "\t")) or \
         text.endswith((" ", "\t")) or \
         text.find("'") != -1:
-        text = SHELL_WRAPPER % (text)
+        text = "\"%s\"" % (text)
     return text
+
+
+def fileperms(path):
+    return (os.stat(path).st_mode & 0777)
 
 
 def listdir(path):
@@ -302,19 +275,19 @@ def joinpths(*paths):
 
 
 def get_suids():
-    uid = env.get_key(SUDO_UID)
+    uid = env.get_key('SUDO_UID')
     if uid is not None:
         uid = int(uid)
-    gid = env.get_key(SUDO_GID)
+    gid = env.get_key('SUDO_GID')
     if gid is not None:
         gid = int(gid)
     return (uid, gid)
 
 
 def chown(path, uid, gid, run_as_root=True):
-    LOG.audit("Changing ownership of %r to %s:%s" % (path, uid, gid))
+    LOG.debug("Changing ownership of %r to %s:%s" % (path, uid, gid))
     with Rooted(run_as_root):
-        if not DRYRUN_MODE:
+        if not is_dry_run():
             os.chown(path, uid, gid)
     return 1
 
@@ -323,7 +296,7 @@ def chown_r(path, uid, gid, run_as_root=True):
     changed = 0
     with Rooted(run_as_root):
         if isdir(path):
-            for root, dirs, files in os.walk(path):
+            for (root, dirs, files) in os.walk(path):
                 changed += chown(root, uid, gid)
                 for d in dirs:
                     dir_pth = joinpths(root, d)
@@ -363,7 +336,6 @@ def remove_parents(child_path, paths):
         return list()
     cleaned_paths = [abspth(p) for p in paths]
     cleaned_child_path = abspth(child_path)
-    LOG.audit("Removing parents of %r from input [%s]" % (cleaned_child_path, ",".join(cleaned_paths)))
     to_check_paths = [_explode_path(p) for p in cleaned_paths]
     check_path = _explode_path(cleaned_child_path)
     new_paths = list()
@@ -375,7 +347,6 @@ def remove_parents(child_path, paths):
     ret_paths = list()
     for p in new_paths:
         ret_paths.append(abspth(os.sep + os.sep.join(p)))
-    LOG.debug("Removal resulted in [%s]", ",".join(ret_paths))
     return ret_paths
 
 
@@ -389,11 +360,11 @@ def _array_begins_with(haystack, needle):
 
 
 def kill(pid, max_try=4, wait_time=1, sig=signal.SIGKILL):
-    if not is_running(pid) or DRYRUN_MODE:
+    if not is_running(pid) or is_dry_run():
         return (True, 0)
     killed = False
     attempts = 0
-    for i in range(0, max_try):
+    for _i in range(0, max_try):
         try:
             LOG.debug("Attempting to kill pid %s" % (pid))
             attempts += 1
@@ -411,7 +382,7 @@ def kill(pid, max_try=4, wait_time=1, sig=signal.SIGKILL):
 
 
 def fork(program, app_dir, pid_fn, stdout_fn, stderr_fn, *args):
-    if DRYRUN_MODE:
+    if is_dry_run():
         return
     # First child, not the real program
     pid = os.fork()
@@ -429,7 +400,7 @@ def fork(program, app_dir, pid_fn, stdout_fn, stderr_fn, *args):
             if app_dir:
                 os.chdir(app_dir)
             # Close other fds (or try)
-            (soft, hard) = resource.getrlimit(resource.RLIMIT_NOFILE)
+            (_soft, hard) = resource.getrlimit(resource.RLIMIT_NOFILE)
             mkfd = hard
             if mkfd == resource.RLIM_INFINITY:
                 mkfd = 2048  # Is this defined anywhere??
@@ -464,7 +435,7 @@ def fork(program, app_dir, pid_fn, stdout_fn, stderr_fn, *args):
 
 
 def is_running(pid):
-    if DRYRUN_MODE:
+    if is_dry_run():
         return True
     # Check proc
     proc_fn = joinpths("/proc", str(pid))
@@ -485,7 +456,6 @@ def is_running(pid):
 
 
 def mkdirslist(path):
-    LOG.debug("Determining potential paths to create for target path %r" % (path))
     dirs_possible = _explode_form_path(path)
     dirs_made = list()
     for check_path in dirs_possible:
@@ -497,9 +467,9 @@ def mkdirslist(path):
 
 def append_file(fn, text, flush=True, quiet=False):
     if not quiet:
-        LOG.audit("Appending to file %r (%d bytes) (flush=%s)", fn, len(text), BOOL2STR.get(flush))
-        LOG.audit(">> %s" % (text))
-    if not DRYRUN_MODE:
+        LOG.debug("Appending to file %r (%d bytes) (flush=%s)", fn, len(text), (flush))
+        LOG.debug(">> %s" % (text))
+    if not is_dry_run():
         with open(fn, "a") as f:
             f.write(text)
             if flush:
@@ -509,9 +479,9 @@ def append_file(fn, text, flush=True, quiet=False):
 
 def write_file(fn, text, flush=True, quiet=False):
     if not quiet:
-        LOG.audit("Writing to file %r (%d bytes) (flush=%s)", fn, len(text), BOOL2STR.get(flush))
-        LOG.audit("> %s" % (text))
-    if not DRYRUN_MODE:
+        LOG.debug("Writing to file %r (%d bytes) (flush=%s)", fn, len(text), (flush))
+        LOG.debug("> %s" % (text))
+    if not is_dry_run():
         with open(fn, "w") as f:
             f.write(text)
             if flush:
@@ -522,8 +492,8 @@ def write_file(fn, text, flush=True, quiet=False):
 def touch_file(fn, die_if_there=True, quiet=False, file_size=0):
     if not isfile(fn):
         if not quiet:
-            LOG.audit("Touching and truncating file %r (truncate size=%s)", fn, file_size)
-        if not DRYRUN_MODE:
+            LOG.debug("Touching and truncating file %r (truncate size=%s)", fn, file_size)
+        if not is_dry_run():
             with open(fn, "w") as f:
                 f.truncate(file_size)
     else:
@@ -533,27 +503,23 @@ def touch_file(fn, die_if_there=True, quiet=False, file_size=0):
     return fn
 
 
-def load_file(fn, quiet=False):
-    if not quiet:
-        LOG.audit("Loading data from file %r", fn)
+def load_file(fn):
     data = ""
-    if not DRYRUN_MODE:
+    if not is_dry_run():
         with open(fn, "r") as f:
             data = f.read()
-    if not quiet:
-        LOG.audit("Loaded (%d) bytes from file %r", len(data), fn)
     return data
 
 
 def mkdir(path, recurse=True):
     if not isdir(path):
         if recurse:
-            LOG.audit("Recursively creating directory %r" % (path))
-            if not DRYRUN_MODE:
+            LOG.debug("Recursively creating directory %r" % (path))
+            if not is_dry_run():
                 os.makedirs(path)
         else:
-            LOG.audit("Creating directory %r" % (path))
-            if not DRYRUN_MODE:
+            LOG.debug("Creating directory %r" % (path))
+            if not is_dry_run():
                 os.mkdir(path)
     return path
 
@@ -561,8 +527,8 @@ def mkdir(path, recurse=True):
 def deldir(path, run_as_root=False):
     with Rooted(run_as_root):
         if isdir(path):
-            LOG.audit("Recursively deleting directory tree starting at %r" % (path))
-            if not DRYRUN_MODE:
+            LOG.debug("Recursively deleting directory tree starting at %r" % (path))
+            if not is_dry_run():
                 shutil.rmtree(path)
 
 
@@ -571,10 +537,10 @@ def rmdir(path, quiet=True, run_as_root=False):
         return
     try:
         with Rooted(run_as_root):
-            LOG.audit("Deleting directory %r with the cavet that we will fail if it's not empty." % (path))
-            if not DRYRUN_MODE:
+            LOG.debug("Deleting directory %r with the cavet that we will fail if it's not empty." % (path))
+            if not is_dry_run():
                 os.rmdir(path)
-            LOG.audit("Deleted directory %r" % (path))
+            LOG.debug("Deleted directory %r" % (path))
     except OSError:
         if not quiet:
             raise
@@ -584,10 +550,10 @@ def rmdir(path, quiet=True, run_as_root=False):
 
 def symlink(source, link, force=True, run_as_root=True):
     with Rooted(run_as_root):
-        LOG.audit("Creating symlink from %r => %r" % (link, source))
+        LOG.debug("Creating symlink from %r => %r" % (link, source))
         path = dirname(link)
         needed_pths = mkdirslist(path)
-        if not DRYRUN_MODE:
+        if not is_dry_run():
             if force and (exists(link) or islink(link)):
                 unlink(link, True)
             os.symlink(source, link)
@@ -631,7 +597,7 @@ def group_exists(grpname):
 
 
 def getuser():
-    (uid, gid) = get_suids()
+    (uid, _gid) = get_suids()
     if uid is None:
         return getpass.getuser()
     return pwd.getpwuid(uid).pw_name
@@ -645,7 +611,6 @@ def gethomedir(user=None):
     if not user:
         user = getuser()
     home_dir = os.path.expanduser("~%s" % (user))
-    LOG.audit("Fetching homedir of %r => %r", user, home_dir)
     return home_dir
 
 
@@ -654,57 +619,15 @@ def getgid(groupname):
 
 
 def getgroupname():
-    (uid, gid) = get_suids()
+    (_uid, gid) = get_suids()
     if gid is None:
         gid = os.getgid()
     return grp.getgrgid(gid).gr_name
 
 
-def create_loopback_file(fname, size, bsize=1024, fs_type='ext3', run_as_root=False):
-    dd_cmd = ['dd', 'if=/dev/zero', 'of=%s' % fname, 'bs=%d' % bsize,
-              'count=0', 'seek=%d' % size]
-    mkfs_cmd = ['mkfs.%s' % fs_type, '-f', '-i', 'size=%d' % bsize, fname]
-
-    # Make sure folder exists
-    files = mkdirslist(dirname(fname))
-
-    # Create file
-    touch_file(fname)
-
-    # Fill with zeroes
-    execute(*dd_cmd, run_as_root=run_as_root)
-
-    # Create fs on the file
-    execute(*mkfs_cmd, run_as_root=run_as_root)
-
-    return files
-
-
-def mount_loopback_file(fname, device_name, fs_type='ext3'):
-    mount_cmd = ['mount', '-t', fs_type, '-o',
-                 'loop,noatime,nodiratime,nobarrier,logbufs=8', fname,
-                 device_name]
-
-    files = mkdirslist(device_name)
-
-    execute(*mount_cmd, run_as_root=True)
-
-    return files
-
-
-def umount(dev_name, ignore_errors=True):
-    try:
-        execute('umount', dev_name, run_as_root=True)
-    except excp.ProcessExecutionError:
-        if not ignore_errors:
-            raise
-        else:
-            pass
-
-
 def unlink(path, ignore_errors=True, run_as_root=False):
-    LOG.audit("Unlinking (removing) %r" % (path))
-    if not DRYRUN_MODE:
+    LOG.debug("Unlinking (removing) %r" % (path))
+    if not is_dry_run():
         try:
             with Rooted(run_as_root):
                 os.unlink(path)
@@ -716,66 +639,65 @@ def unlink(path, ignore_errors=True, run_as_root=False):
 
 
 def copy(src, dst):
-    LOG.audit("Copying: %r => %r" % (src, dst))
-    if not DRYRUN_MODE:
+    LOG.debug("Copying: %r => %r" % (src, dst))
+    if not is_dry_run():
         shutil.copy(src, dst)
     return dst
 
 
+def copytree(src, dst):
+    LOG.debug("Copying full tree: %r => %r" % (src, dst))
+    if not is_dry_run():
+        shutil.copytree(src, dst)
+    return dst
+
+
 def move(src, dst):
-    LOG.audit("Moving: %r => %r" % (src, dst))
-    if not DRYRUN_MODE:
+    LOG.debug("Moving: %r => %r" % (src, dst))
+    if not is_dry_run():
         shutil.move(src, dst)
     return dst
 
 
+def write_file_and_backup(path, contents, bk_ext='org'):
+    perms = None
+    backup_path = None
+    if isfile(path):
+        perms = fileperms(path)
+        backup_path = "%s.%s" % (path, bk_ext)
+        if not isfile(backup_path):
+            LOG.debug("Backing up %s => %s", path, backup_path)
+            move(path, backup_path)
+        else:
+            LOG.debug("Leaving original backup of %s at %s", path, backup_path)
+    write_file(path, contents)
+    if perms is not None:
+        chmod(path, perms)
+    return backup_path
+
+
 def chmod(fname, mode):
-    LOG.audit("Applying chmod: %r to %o" % (fname, mode))
-    if not DRYRUN_MODE:
+    LOG.debug("Applying chmod: %r to %o" % (fname, mode))
+    if not is_dry_run():
         os.chmod(fname, mode)
     return fname
 
 
-def replace_in(fn, search, replace, run_as_root=False):
-    with Rooted(run_as_root):
-        contents = load_file(fn)
-
-        def replacer(match):
-            return replace
-
-        (contents, num_changed) = search.subn(replacer, contents)
-        if num_changed:
-            write_file(fn, contents)
-
-
-def copy_replace_file(fsrc, fdst, linemap):
-    files = mkdirslist(dirname(fdst))
-    LOG.audit("Copying and replacing file: %r => %r" % (fsrc, fdst))
-    if not DRYRUN_MODE:
-        with open(fdst, 'w') as fh:
-            for line in fileinput.input(fsrc):
-                for (k, v) in linemap.items():
-                    line = line.replace(k, v)
-                fh.write(line)
-    return files
-
-
 def got_root():
-    return os.geteuid() == ROOT_USER_UID
+    return (os.geteuid() == 0)
 
 
 def root_mode(quiet=True):
-    root_uid = getuid(ROOT_USER)
-    root_gid = getgid(ROOT_USER)
+    root_uid = getuid('root')
+    root_gid = getgid('root')
     if root_uid is None or root_gid is None:
-        msg = "Cannot escalate permissions to (user=%s) - does that user exist??" % (ROOT_USER)
+        msg = "Cannot escalate permissions to (user=root) - does that user exist??"
         if quiet:
             LOG.warn(msg)
         else:
-            raise excp.StackException(msg)
+            raise excp.AnvilException(msg)
     else:
         try:
-            LOG.audit("Escalating permissions to (user=%s, group=%s)" % (root_uid, root_gid))
             os.setreuid(0, root_uid)
             os.setregid(0, root_gid)
         except OSError:
@@ -789,7 +711,6 @@ def user_mode(quiet=True):
     (sudo_uid, sudo_gid) = get_suids()
     if sudo_uid is not None and sudo_gid is not None:
         try:
-            LOG.audit("Dropping permissions to (user=%s, group=%s)" % (sudo_uid, sudo_gid))
             os.setregid(0, sudo_gid)
             os.setreuid(0, sudo_uid)
         except OSError:
@@ -802,7 +723,7 @@ def user_mode(quiet=True):
         if quiet:
             LOG.warn(msg)
         else:
-            raise excp.StackException(msg)
+            raise excp.AnvilException(msg)
 
 
 def is_executable(fn):
@@ -818,7 +739,9 @@ def getegid():
 
 
 def sleep(winks):
-    if DRYRUN_MODE:
-        LOG.audit("Not really sleeping for: %s seconds" % (winks))
+    if winks <= 0:
+        return
+    if is_dry_run():
+        LOG.debug("Not really sleeping for: %s seconds" % (winks))
     else:
         time.sleep(winks)

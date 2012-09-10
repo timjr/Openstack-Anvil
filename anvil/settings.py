@@ -15,22 +15,12 @@
 #    under the License.
 
 import os
-import sys
 
-from anvil import constants
-
-# RC files generated / used
-RC_FN_TEMPL = "%s.rc"
 
 # Where the configs and templates should be at...
-BIN_DIR = os.path.abspath(os.path.dirname(sys.argv[0]))
-CONFIG_DIR = os.path.join(BIN_DIR, "conf")
+CONFIG_DIR = 'conf'
+COMPONENT_CONF_DIR = os.path.join(CONFIG_DIR, "components")
 DISTRO_DIR = os.path.join(CONFIG_DIR, "distros")
-TEMPLATE_DIR = os.path.join(CONFIG_DIR, "templates")
 PERSONA_DIR = os.path.join(CONFIG_DIR, "personas")
-CONFIG_NAME = constants.CONFIG_NAME
-CONFIG_LOCATION = os.path.join(CONFIG_DIR, CONFIG_NAME)
+TEMPLATE_DIR = os.path.join(CONFIG_DIR, "templates")
 
-
-def gen_rc_filename(root_name):
-    return RC_FN_TEMPL % (root_name)

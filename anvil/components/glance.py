@@ -17,13 +17,15 @@
 import io
 
 from anvil import cfg
-from anvil import component as comp
+from anvil import colorizer
+from anvil import components as comp
 from anvil import log as logging
 from anvil import shell as sh
+from anvil import utils
 
-from anvil.helpers import db as dbhelper
-from anvil.helpers import glance as ghelper
-from anvil.helpers import keystone as khelper
+from anvil.components.helpers import db as dbhelper
+from anvil.components.helpers import glance as ghelper
+from anvil.components.helpers import keystone as khelper
 
 LOG = logging.getLogger(__name__)
 
@@ -33,108 +35,113 @@ REG_CONF = "glance-registry.conf"
 API_PASTE_CONF = 'glance-api-paste.ini'
 REG_PASTE_CONF = 'glance-registry-paste.ini'
 LOGGING_CONF = "logging.conf"
-LOGGING_SOURCE_FN = 'logging.cnf.sample'
 POLICY_JSON = 'policy.json'
 CONFIGS = [API_CONF, REG_CONF, API_PASTE_CONF,
-            REG_PASTE_CONF, POLICY_JSON, LOGGING_CONF]
+           REG_PASTE_CONF, POLICY_JSON, LOGGING_CONF]
 
 # Reg, api, scrub are here as possible subsystems
 GAPI = "api"
 GREG = "reg"
-GSCR = 'scrub'
 
 # This db will be dropped and created
 DB_NAME = "glance"
 
 # What applications to start
 APP_OPTIONS = {
-    'glance-api': ['--config-file', sh.joinpths('%CONFIG_DIR%', API_CONF)],
-    'glance-registry': ['--config-file', sh.joinpths('%CONFIG_DIR%', REG_CONF)],
-    'glance-scrubber': ['--config-file', sh.joinpths('%CONFIG_DIR%', REG_CONF)],
+    'glance-api': ['--config-file', sh.joinpths('$CONFIG_DIR', API_CONF)],
+    'glance-registry': ['--config-file', sh.joinpths('$CONFIG_DIR', REG_CONF)],
 }
 
 # How the subcompoent small name translates to an actual app
 SUB_TO_APP = {
     GAPI: 'glance-api',
     GREG: 'glance-registry',
-    GSCR: 'glance-scrubber',
 }
 
-# Subdirs of the downloaded (we are overriding the original)
-BIN_DIR = 'bin'
+# Sync db command
+SYNC_DB_CMD = [sh.joinpths('$BIN_DIR', 'glance-manage'),
+                '--debug', '-v',
+                # Available commands:
+                'db_sync']
 
 
-class GlanceMixin(object):
-
-    def known_subsystems(self):
-        return SUB_TO_APP.keys()
-
-    def _get_config_files(self):
-        return list(CONFIGS)
-
-    def _get_download_locations(self):
-        places = list()
-        places.append({
-            'uri': ("git", "glance_repo"),
-            'branch': ("git", "glance_branch"),
-        })
-        return places
-
-
-class GlanceUninstaller(GlanceMixin, comp.PythonUninstallComponent):
+class GlanceUninstaller(comp.PythonUninstallComponent):
     def __init__(self, *args, **kargs):
         comp.PythonUninstallComponent.__init__(self, *args, **kargs)
+        self.bin_dir = sh.joinpths(self.get_option('app_dir'), 'bin')
 
 
-class GlanceInstaller(GlanceMixin, comp.PythonInstallComponent):
+class GlanceInstaller(comp.PythonInstallComponent):
     def __init__(self, *args, **kargs):
         comp.PythonInstallComponent.__init__(self, *args, **kargs)
+        self.bin_dir = sh.joinpths(self.get_option('app_dir'), 'bin')
+
+    @property
+    def config_files(self):
+        return list(CONFIGS)
+
+    def _filter_pip_requires_line(self, line):
+        if line.lower().find('swift') != -1:
+            return None
+        return line
 
     def pre_install(self):
         comp.PythonInstallComponent.pre_install(self)
-        if self.cfg.getboolean('glance', 'eliminate_pip_gits'):
-            fn = sh.joinpths(self.get_option('app_dir'), 'tools', 'pip-requires')
-            if sh.isfile(fn):
-                new_lines = []
-                for line in sh.load_file(fn).splitlines():
-                    if line.find("git://") != -1:
-                        new_lines.append("# %s" % (line))
-                    else:
-                        new_lines.append(line)
-                sh.write_file(fn, "\n".join(new_lines))
 
     def post_install(self):
         comp.PythonInstallComponent.post_install(self)
-        self._setup_db()
+        if self.get_bool_option('db-sync'):
+            self._setup_db()
+            self._sync_db()
 
     def _setup_db(self):
-        dbhelper.drop_db(self.cfg, self.distro, DB_NAME)
-        dbhelper.create_db(self.cfg, self.distro, DB_NAME, utf8=True)
+        dbhelper.drop_db(distro=self.distro,
+                         dbtype=self.get_option('db', 'type'),
+                         dbname=DB_NAME,
+                         **utils.merge_dicts(self.get_option('db'),
+                                             dbhelper.get_shared_passwords(self)))
+        dbhelper.create_db(distro=self.distro,
+                           dbtype=self.get_option('db', 'type'),
+                           dbname=DB_NAME,
+                           **utils.merge_dicts(self.get_option('db'),
+                                               dbhelper.get_shared_passwords(self)))
 
-    def _get_source_config(self, config_fn):
-        real_fn = config_fn
+    def _sync_db(self):
+        LOG.info("Syncing glance to database: %s", colorizer.quote(DB_NAME))
+        cmds = [{'cmd': SYNC_DB_CMD, 'run_as_root': True}]
+        utils.execute_template(*cmds, cwd=self.bin_dir, params=self.config_params(None))
+
+    def source_config(self, config_fn):
         if config_fn == LOGGING_CONF:
-            real_fn = LOGGING_SOURCE_FN
+            real_fn = 'logging.cnf.sample'
+        else:
+            real_fn = config_fn
         fn = sh.joinpths(self.get_option('app_dir'), 'etc', real_fn)
         return (fn, sh.load_file(fn))
 
     def _config_adjust_registry(self, contents, fn):
-        params = ghelper.get_shared_params(self.cfg)
+        params = ghelper.get_shared_params(**self.options)
         with io.BytesIO(contents) as stream:
             config = cfg.RewritableConfigParser()
             config.readfp(stream)
-            config.set('DEFAULT', 'debug', True)
-            config.set('DEFAULT', 'verbose', True)
+            config.set('DEFAULT', 'debug', self.get_bool_option('verbose'))
+            config.set('DEFAULT', 'verbose', self.get_bool_option('verbose'))
             config.set('DEFAULT', 'bind_port', params['endpoints']['registry']['port'])
-            config.set('DEFAULT', 'sql_connection',
-                                dbhelper.fetch_dbdsn(self.cfg, DB_NAME, utf8=True))
+            config.set('DEFAULT', 'sql_connection', dbhelper.fetch_dbdsn(dbname=DB_NAME,
+                                                                         utf8=True,
+                                                                         dbtype=self.get_option('db', 'type'),
+                                                                         **utils.merge_dicts(self.get_option('db'),
+                                                                                             dbhelper.get_shared_passwords(self))))
             config.remove_option('DEFAULT', 'log_file')
-            config.set('paste_deploy', 'flavor', 'keystone')
+            config.set('paste_deploy', 'flavor', self.get_option('paste_flavor'))
             return config.stringify(fn)
         return contents
 
     def _config_adjust_paste(self, contents, fn):
-        params = khelper.get_shared_params(self.cfg, 'glance')
+        params = khelper.get_shared_params(ip=self.get_option('ip'),
+                                           service_user='glance',
+                                           **utils.merge_dicts(self.get_option('keystone'), 
+                                                               khelper.get_shared_passwords(self)))
         with io.BytesIO(contents) as stream:
             config = cfg.RewritableConfigParser()
             config.readfp(stream)
@@ -142,9 +149,8 @@ class GlanceInstaller(GlanceMixin, comp.PythonInstallComponent):
             config.set('filter:authtoken', 'auth_port', params['endpoints']['admin']['port'])
             config.set('filter:authtoken', 'auth_protocol', params['endpoints']['admin']['protocol'])
 
-            config.set('filter:authtoken', 'service_host', params['endpoints']['internal']['host'])
-            config.set('filter:authtoken', 'service_port', params['endpoints']['internal']['port'])
-            config.set('filter:authtoken', 'service_protocol', params['endpoints']['internal']['protocol'])
+            # This uses the public uri not the admin one...
+            config.set('filter:authtoken', 'auth_uri', params['endpoints']['public']['uri'])
 
             config.set('filter:authtoken', 'admin_tenant_name', params['service_tenant'])
             config.set('filter:authtoken', 'admin_user', params['service_user'])
@@ -153,21 +159,24 @@ class GlanceInstaller(GlanceMixin, comp.PythonInstallComponent):
         return contents
 
     def _config_adjust_api(self, contents, fn):
-        params = ghelper.get_shared_params(self.cfg)
+        params = ghelper.get_shared_params(**self.options)
         with io.BytesIO(contents) as stream:
             config = cfg.RewritableConfigParser()
             config.readfp(stream)
             img_store_dir = sh.joinpths(self.get_option('component_dir'), 'images')
-            config.set('DEFAULT', 'debug', True)
-            config.set('DEFAULT', 'verbose', True)
+            config.set('DEFAULT', 'debug', self.get_bool_option('verbose',))
+            config.set('DEFAULT', 'verbose', self.get_bool_option('verbose'))
             config.set('DEFAULT', 'default_store', 'file')
             config.set('DEFAULT', 'filesystem_store_datadir', img_store_dir)
             config.set('DEFAULT', 'bind_port', params['endpoints']['public']['port'])
-            config.set('DEFAULT', 'sql_connection',
-                                dbhelper.fetch_dbdsn(self.cfg, DB_NAME, utf8=True))
+            config.set('DEFAULT', 'sql_connection', dbhelper.fetch_dbdsn(dbname=DB_NAME,
+                                                                         utf8=True,
+                                                                         dbtype=self.get_option('db', 'type'),
+                                                                         **utils.merge_dicts(self.get_option('db'), 
+                                                                                             dbhelper.get_shared_passwords(self))))
             config.remove_option('DEFAULT', 'log_file')
-            config.set('paste_deploy', 'flavor', 'keystone')
-            LOG.info("Ensuring file system store directory %r exists and is empty." % (img_store_dir))
+            config.set('paste_deploy', 'flavor', self.get_option('paste_flavor'))
+            LOG.debug("Ensuring file system store directory %r exists and is empty." % (img_store_dir))
             sh.deldir(img_store_dir)
             self.tracewriter.dirs_made(*sh.mkdirslist(img_store_dir))
             return config.stringify(fn)
@@ -183,7 +192,6 @@ class GlanceInstaller(GlanceMixin, comp.PythonInstallComponent):
 
     def _config_param_replace(self, config_fn, contents, parameters):
         if config_fn in [REG_CONF, REG_PASTE_CONF, API_CONF, API_PASTE_CONF, LOGGING_CONF]:
-            # We handle these ourselves
             return contents
         else:
             return comp.PythonInstallComponent._config_param_replace(self, config_fn, contents, parameters)
@@ -202,41 +210,54 @@ class GlanceInstaller(GlanceMixin, comp.PythonInstallComponent):
         else:
             return contents
 
+    def config_params(self, config_fn):
+        # These be used to fill in the configuration params
+        mp = comp.PythonInstallComponent.config_params(self, config_fn)
+        mp['BIN_DIR'] = self.bin_dir
+        return mp
 
-class GlanceRuntime(GlanceMixin, comp.PythonRuntime):
+
+class GlanceRuntime(comp.PythonRuntime):
     def __init__(self, *args, **kargs):
         comp.PythonRuntime.__init__(self, *args, **kargs)
-        self.bin_dir = sh.joinpths(self.get_option('app_dir'), BIN_DIR)
-        self.wait_time = max(self.cfg.getint('DEFAULT', 'service_wait_seconds'), 1)
-        self.do_upload = self.get_option('load-images')
+        self.bin_dir = sh.joinpths(self.get_option('app_dir'), 'bin')
 
-    def _get_apps_to_start(self):
-        apps = list()
-        for name, values in self.subsystems.items():
+    @property
+    def apps_to_start(self):
+        apps = []
+        for (name, _values) in self.subsystems.items():
             if name in SUB_TO_APP:
-                subsys = name
                 apps.append({
-                    'name': SUB_TO_APP[subsys],
-                    'path': sh.joinpths(self.bin_dir, SUB_TO_APP[subsys]),
-                    # This seems needed, to allow for the db syncs to not conflict... (arg)
-                    'sleep_time': 5,
+                    'name': SUB_TO_APP[name],
+                    'path': sh.joinpths(self.bin_dir, SUB_TO_APP[name]),
                 })
         return apps
 
-    def _get_app_options(self, app):
+    def app_options(self, app):
         return APP_OPTIONS.get(app)
 
     def _get_image_urls(self):
-        uris = self.cfg.getdefaulted('glance', 'image_urls', '').split(",")
+        uris = self.get_option('image_urls', default_value=[])
         return [u.strip() for u in uris if len(u.strip())]
 
     def post_start(self):
         comp.PythonRuntime.post_start(self)
-        if self.do_upload:
+        if self.get_bool_option('load-images'):
             # Install any images that need activating...
-            LOG.info("Waiting %s seconds so that glance can start up before image install." % (self.wait_time))
-            sh.sleep(self.wait_time)
+            self.wait_active()
             params = {}
-            params['glance'] = ghelper.get_shared_params(self.cfg)
-            params['keystone'] = khelper.get_shared_params(self.cfg, 'glance')
+            params['glance'] = ghelper.get_shared_params(**self.options)
+            params['keystone'] = khelper.get_shared_params(ip=self.get_option('ip'),
+                                                           service_user='glance',
+                                                           **utils.merge_dicts(self.get_option('keystone'),
+                                                                               khelper.get_shared_passwords(self)))
             ghelper.UploadService(params).install(self._get_image_urls())
+
+
+class GlanceTester(comp.PythonTestingComponent):
+    # TODO(harlowja) these should probably be bugs...
+    def _get_test_exclusions(self):
+        return [
+            # These seem to require swift, not always installed...
+            'test_swift_store',
+        ]

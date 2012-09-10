@@ -5,7 +5,6 @@ set -u
 
 function find_src {
   files=`find anvil -type f | grep "py\$"`
-  files+=" smithy"
   echo $files
 }
 

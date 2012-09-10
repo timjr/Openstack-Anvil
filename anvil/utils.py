@@ -23,34 +23,28 @@ import random
 import re
 import socket
 import tempfile
+import urllib2
 
-import distutils.version
+from datetime import datetime
+
 from urlparse import urlunparse
 
 import netifaces
 import progressbar
 import yaml
 
-from anvil import constants
+from Cheetah.Template import Template
+
 from anvil import colorizer
-from anvil import date
-from anvil import exceptions as excp
 from anvil import log as logging
+from anvil import pprint
 from anvil import settings
 from anvil import shell as sh
 from anvil import version
 
-# The pattern will match either a comment to the EOL, or a
-# token to be subbed. The replacer will check which it got and
-# act accordingly. Note that we need the MULTILINE flag
-# for the comment checks to work in a string containing newlines
-PARAM_SUB_REGEX = re.compile(r"#(.*)$|%([\w\d/\.]+?)%", re.MULTILINE)
-EXT_COMPONENT = re.compile(r"^\s*([\w-]+)(?:\((.*)\))?\s*$")
+from anvil.pprint import center_text
+
 MONTY_PYTHON_TEXT_RE = re.compile("([a-z0-9A-Z\?!.,'\"]+)")
-DEF_IP = "127.0.0.1"
-IP_LOOKER = '8.8.8.8'
-DEF_IP_VERSION = constants.IPV4
-STAR_VERSION = 0
 
 # Thx cowsay
 # See: http://www.nog.net/~tony/warez/cowsay.shtml
@@ -75,23 +69,92 @@ COWS['unhappy'] = r'''
 LOG = logging.getLogger(__name__)
 
 
-def make_bool(val):
-    if type(val) is bool:
-        return val
-    sval = str(val).lower().strip()
-    if sval in ['true', '1', 'on', 'yes', 't']:
-        return True
-    if sval in ['0', 'false', 'off', 'no', 'f', '']:
+def expand_template(contents, params):
+    if not params:
+        params = {}
+    return Template(str(contents), searchList=[params]).respond()
+
+
+def expand_template_deep(root, params):
+    if isinstance(root, (basestring, str)):
+        return expand_template(root, params)
+    if isinstance(root, (list, tuple)):
+        n_list = []
+        for i in root:
+            n_list.append(expand_template_deep(i, params))
+        return n_list
+    if isinstance(root, (dict)):
+        n_dict = {}
+        for (k, v) in root.items():
+            n_dict[k] = expand_template_deep(v, params)
+        return n_dict
+    if isinstance(root, (set)):
+        n_set = set()
+        for v in root:
+            n_set.add(expand_template_deep(v, params))
+        return n_set
+    return root
+
+
+def load_yaml(path):
+    return load_yaml_text(sh.load_file(path))
+
+
+def load_yaml_text(text):
+    return yaml.safe_load(text)
+
+
+def has_any(text, *look_for):
+    if not look_for:
         return False
-    raise TypeError("Unable to convert %r to a boolean" % (val))
+    for v in look_for:
+        if text.find(v) != -1:
+            return True
+    return False
 
 
-def add_header(fn, contents):
-    lines = list()
+def wait_for_url(url, max_attempts=3, wait_between=5):
+    excps = []
+    LOG.info("Waiting for url %s to become active (max_attempts=%s, seconds_between=%s)",
+             colorizer.quote(url), max_attempts, wait_between)
+
+    def waiter():
+        LOG.info("Sleeping for %s seconds, %s is still not active.", wait_between, colorizer.quote(url))
+        sh.sleep(wait_between)
+
+    def success(attempts):
+        LOG.info("Url %s became active after %s attempts!", colorizer.quote(url), attempts)
+
+    for i in range(0, max_attempts):
+        try:
+            with contextlib.closing(urllib2.urlopen(urllib2.Request(url))) as req:
+                req.read()
+                success(i + 1)
+                return
+        except urllib2.HTTPError as e:
+            if e.code in xrange(200, 499) or e.code in [501]:
+                # Should be ok, at least its responding...
+                success(i + 1)
+                return
+            else:
+                excps.append(e)
+                waiter()
+        except IOError as e:
+            excps.append(e)
+            waiter()
+    if excps:
+        raise excps[-1]
+
+
+def add_header(fn, contents, adjusted=True):
+    lines = []
     if not fn:
         fn = "???"
-    lines.append('# Adjusted source file %s' % (fn.strip()))
-    lines.append("# On %s" % (date.rcf8222date()))
+    if adjusted:
+        lines.append('# Adjusted source file %s' % (fn.strip()))
+    else:
+        lines.append('# Created source file %s' % (fn.strip()))
+    lines.append("# On %s" % (iso8601()))
     lines.append("# By user %s, group %s" % (sh.getuser(), sh.getgroupname()))
     lines.append("")
     if contents:
@@ -99,8 +162,22 @@ def add_header(fn, contents):
     return joinlinesep(*lines)
 
 
-def make_url(scheme, host, port=None,
-                path='', params='', query='', fragment=''):
+def iso8601():
+    return datetime.now().isoformat()
+
+
+def merge_dicts(*dicts, **kwargs):
+    merged = {}
+    for mp in dicts:
+        for (k, v) in mp.items():
+            if kwargs.get('preserve') and k in merged:
+                continue
+            else:
+                merged[k] = v
+    return merged
+
+
+def make_url(scheme, host, port=None, path='', params='', query='', fragment=''):
 
     pieces = []
     pieces.append(scheme or '')
@@ -118,32 +195,21 @@ def make_url(scheme, host, port=None,
     pieces.append(query or '')
     pieces.append(fragment or '')
 
-    return urlunparse(pieces)
+    return urlunparse([str(p) for p in pieces])
 
 
-def get_from_path(items, path, quiet=True):
-
-    LOG.debug("Looking up %r in %s" % (path, items))
-
-    (first_token, sep, remainder) = path.partition('.')
-
+def get_deep(items, path, quiet=True):
     if len(path) == 0:
         return items
 
-    if len(first_token) == 0:
-        if not quiet:
-            raise RuntimeError("Invalid first token found in %s" % (path))
-        else:
-            return None
-
-    if isinstance(items, list):
-        index = int(first_token)
-        ok_use = (index < len(items) and index >= 0)
-        if quiet and not ok_use:
+    head = path[0]
+    remainder = path[1:]
+    if isinstance(items, (list, tuple)):
+        index = int(head)
+        if quiet and not (index < len(items) and index >= 0):
             return None
         else:
-            LOG.debug("Looking up index %s in list %s" % (index, items))
-            return get_from_path(items[index], remainder)
+            return get_deep(items[index], remainder)
     else:
         get_method = getattr(items, 'get', None)
         if not get_method:
@@ -152,8 +218,7 @@ def get_from_path(items, path, quiet=True):
             else:
                 return None
         else:
-            LOG.debug("Looking up %r in object %s with method %s" % (first_token, items, get_method))
-            return get_from_path(get_method(first_token), remainder)
+            return get_deep(get_method(head), remainder)
 
 
 def load_template(component, template_name):
@@ -161,25 +226,28 @@ def load_template(component, template_name):
     return (templ_pth, sh.load_file(templ_pth))
 
 
-def execute_template(*cmds, **kargs):
-    params_replacements = kargs.pop('params', None)
-    ignore_missing = kargs.pop('ignore_missing', False)
-    cmd_results = list()
-    for cmdinfo in cmds:
-        cmd_to_run_templ = cmdinfo["cmd"]
-        cmd_to_run = param_replace_list(cmd_to_run_templ, params_replacements, ignore_missing)
-        stdin_templ = cmdinfo.get('stdin')
+def execute_template(cmd, *cmds, **kargs):
+    params = kargs.pop('params', None) or {}
+    results = []
+    for info in [cmd] + list(cmds):
+        run_what_tpl = info["cmd"]
+        if not isinstance(run_what_tpl, (list, tuple, set)):
+            run_what_tpl = [run_what_tpl]
+        run_what = [expand_template(c, params) for c in run_what_tpl]
         stdin = None
-        if stdin_templ:
-            stdin_full = param_replace_list(stdin_templ, params_replacements, ignore_missing)
-            stdin = joinlinesep(*stdin_full)
-        exec_result = sh.execute(*cmd_to_run,
-                                 run_as_root=cmdinfo.get('run_as_root', False),
-                                 process_input=stdin,
-                                 ignore_exit_code=cmdinfo.get('ignore_failure', False),
-                                 **kargs)
-        cmd_results.append(exec_result)
-    return cmd_results
+        stdin_tpl = info.get('stdin')
+        if stdin_tpl:
+            if not isinstance(stdin_tpl, (list, tuple, set)):
+                stdin_tpl = [stdin_tpl]
+            stdin = [expand_template(c, params) for c in stdin_tpl]
+            stdin = "\n".join(stdin)
+        result = sh.execute(*run_what,
+                            run_as_root=info.get('run_as_root', False),
+                            process_input=stdin,
+                            ignore_exit_code=info.get('ignore_failure', False),
+                            **kargs)
+        results.append(result)
+    return results
 
 
 def to_bytes(text):
@@ -199,18 +267,47 @@ def to_bytes(text):
     return byte_val
 
 
-def log_iterable(to_log, header=None, logger=None, do_color=True):
+def truncate_text(text, max_len, from_bottom=False):
+    if len(text) < max_len:
+        return text
+    if not from_bottom:
+        return (text[0:max_len] + "...")
+    else:
+        text = text[::-1]
+        text = truncate_text(text, max_len)
+        text = text[::-1]
+        return text
+
+
+def log_object(to_log, logger=None, level=logging.INFO, item_max_len=64):
     if not to_log:
         return
     if not logger:
         logger = LOG
+    content = pprint.pformat(to_log, item_max_len)
+    for line in content.splitlines():
+        logger.log(level, line)
+
+
+def log_iterable(to_log, header=None, logger=None, color='blue'):
+    if not logger:
+        logger = LOG
+    if not to_log:
+        if not header:
+            return
+        if header.endswith(":"):
+            header = header[0:-1]
+        if not header.endswith("."):
+            header = header + "."
+        logger.info(header)
+        return
     if header:
         if not header.endswith(":"):
             header += ":"
         logger.info(header)
     for c in to_log:
-        if do_color:
-            c = colorizer.color(c, 'blue')
+        if color:
+            c = colorizer.color(c, color)
         logger.info("|-- %s", c)
 
 
@@ -246,43 +343,6 @@ def tempdir(**kwargs):
         sh.deldir(tdir)
 
 
-def versionize(input_version, unknown_version="-1.0"):
-    if input_version == None:
-        return distutils.version.LooseVersion(unknown_version)
-    input_version = str(input_version)
-    segments = input_version.split(".")
-    cleaned_segments = list()
-    for piece in segments:
-        piece = piece.strip()
-        if len(piece) == 0:
-            cleaned_segments.append("")
-        else:
-            piece = piece.strip("*")
-            if len(piece) == 0:
-                cleaned_segments.append(STAR_VERSION)
-            else:
-                try:
-                    piece = int(piece)
-                except ValueError:
-                    pass
-                cleaned_segments.append(piece)
-    if not cleaned_segments:
-        return distutils.version.LooseVersion(unknown_version)
-    return distutils.version.LooseVersion(".".join([str(p) for p in cleaned_segments]))
-
-
-def sort_versions(versions, descending=True):
-    if not versions:
-        return list()
-    version_cleaned = list()
-    for v in versions:
-        version_cleaned.append(versionize(v))
-    versions_sorted = sorted(version_cleaned)
-    if not descending:
-        versions_sorted.reverse()
-    return versions_sorted
-
-
 def get_host_ip():
     """
     Returns the actual ip of the local machine.
@@ -297,7 +357,7 @@ def get_host_ip():
     ip = None
     try:
         csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        csock.connect((IP_LOOKER, 80))
+        csock.connect(('8.8.8.8', 80))
         (addr, _) = csock.getsockname()
         csock.close()
         ip = addr
@@ -307,7 +367,7 @@ def get_host_ip():
     if not ip:
         interfaces = get_interfaces()
         for (_, net_info) in interfaces.items():
-            ip_info = net_info.get(DEF_IP_VERSION)
+            ip_info = net_info.get('IPv4')
             if ip_info:
                 a_ip = ip_info.get('addr')
                 if a_ip:
@@ -315,23 +375,36 @@ def get_host_ip():
                     break
     # Just return a localhost version then
     if not ip:
-        ip = DEF_IP
+        ip = "127.0.0.1"
     return ip
 
 
+@contextlib.contextmanager
+def chdir(where_to):
+    curr_cd = os.getcwd()
+    if curr_cd == where_to:
+        yield where_to
+    else:
+        try:
+            os.chdir(where_to)
+            yield where_to
+        finally:
+            os.chdir(curr_cd)
+
+
 def get_interfaces():
-    interfaces = dict()
+    interfaces = {}
     for intfc in netifaces.interfaces():
-        interface_info = dict()
+        interface_info = {}
         interface_addresses = netifaces.ifaddresses(intfc)
         ip6 = interface_addresses.get(netifaces.AF_INET6)
         if ip6:
             # Just take the first
-            interface_info[constants.IPV6] = ip6[0]
+            interface_info['IPv6'] = ip6[0]
         ip4 = interface_addresses.get(netifaces.AF_INET)
         if ip4:
             # Just take the first
-            interface_info[constants.IPV4] = ip4[0]
+            interface_info['IPv4'] = ip4[0]
         # Note: there are others but this is good for now..
         interfaces[intfc] = interface_info
     return interfaces
@@ -348,38 +421,6 @@ def joinlinesep(*pieces):
     return os.linesep.join(pieces)
 
 
-def get_class_names(objects):
-    return map((lambda i: i.__class__.__name__), objects)
-
-
-def param_replace_list(values, replacements, ignore_missing=False):
-    new_values = list()
-    if not values:
-        return new_values
-    for v in values:
-        if v is not None:
-            new_values.append(param_replace(str(v), replacements, ignore_missing))
-        else:
-            new_values.append(v)
-    return new_values
-
-
-def find_params(text):
-    params_found = set()
-    if not text:
-        text = ''
-
-    def finder(match):
-        param_name = match.group(2)
-        if param_name is not None and param_name not in params_found:
-            params_found.add(param_name)
-        # Just finding, not modifying...
-        return match.group(0)
-
-    PARAM_SUB_REGEX.sub(finder, text)
-    return params_found
-
-
 def prettify_yaml(obj):
     formatted = yaml.dump(obj,
                     line_break="\n",
@@ -391,69 +432,8 @@ def prettify_yaml(obj):
     return formatted
 
 
-def param_replace_deep(root, replacements, ignore_missing=False):
-    if isinstance(root, list):
-        new_list = []
-        for v in root:
-            new_list.append(param_replace_deep(v, replacements, ignore_missing))
-        return new_list
-    elif isinstance(root, basestring):
-        return param_replace(root, replacements, ignore_missing)
-    elif isinstance(root, dict):
-        mapped_dict = {}
-        for (k, v) in root.items():
-            mapped_dict[k] = param_replace_deep(v, replacements, ignore_missing)
-        return mapped_dict
-    elif isinstance(root, set):
-        mapped_set = set()
-        for v in root:
-            mapped_set.add(param_replace_deep(v, replacements, ignore_missing))
-        return mapped_set
-    else:
-        return root
-
-
-def param_replace(text, replacements, ignore_missing=False):
-
-    if not replacements:
-        replacements = dict()
-
-    if not text:
-        text = ""
-
-    if ignore_missing:
-        LOG.debug("Performing parameter replacements (ignoring missing) on text %r" % (text))
-    else:
-        LOG.debug("Performing parameter replacements (not ignoring missing) on text %r" % (text))
-
-    possible_params = find_params(text)
-    LOG.debug("Possible replacements are: %r" % (", ".join(possible_params)))
-    LOG.debug("Given substitutions are: %s" % (replacements))
-
-    def replacer(match):
-        org_txt = match.group(0)
-        # Its a comment, leave it be
-        if match.group(1) is not None:
-            return org_txt
-        param_name = match.group(2)
-        # Find the replacement, if we can
-        replacer = get_from_path(replacements, param_name)
-        if replacer is None and ignore_missing:
-            replacer = org_txt
-        elif replacer is None and not ignore_missing:
-            msg = "No replacement found for parameter %r in %r" % (param_name, org_txt)
-            raise excp.NoReplacementException(msg)
-        else:
-            LOG.debug("Replacing %r with %r in %r", param_name, replacer, org_txt)
-        return str(replacer)
-
-    replaced_text = PARAM_SUB_REGEX.sub(replacer, text)
-    LOG.debug("Replacement/s resulted in text %r", replaced_text)
-    return replaced_text
-
-
 def _get_welcome_stack():
-    possibles = list()
+    possibles = []
     # Thank you figlet ;)
     # See: http://www.figlet.org/
     possibles.append(r'''
@@ -503,9 +483,6 @@ ____ ___  ____ _  _ ____ ___ ____ ____ _  _
     return random.choice(possibles).strip("\n\r")
 
 
-def center_text(text, fill, max_len):
-    return '{0:{fill}{align}{size}}'.format(text, fill=fill, align="^", size=max_len)
-
 
 def _welcome_slang():
     potentials = list()
@@ -525,7 +502,7 @@ def _color_blob(text, text_color):
 def _goodbye_header(worked):
     # Cowsay headers
     # See: http://www.nog.net/~tony/warez/cowsay.shtml
-    potentials_oks = list()
+    potentials_oks = []
     potentials_oks.append(r'''
  ___________
 / You shine \
@@ -567,7 +544,7 @@ def _goodbye_header(worked):
  __________
 < Success! >
  ----------''')
-    potentials_fails = list()
+    potentials_fails = []
     potentials_fails.append(r'''
  __________
 < Failure! >
@@ -727,7 +704,7 @@ def goodbye(worked):
     print(msg)
 
 
-def welcome(prog_name=constants.PROG_NAME.upper(), version_text=version.version_string()):
+def welcome(prog_name='Anvil', version_text=version.version_string()):
     lower = "| %s |" % (version_text)
     welcome_header = _get_welcome_stack()
     max_line_len = len(max(welcome_header.splitlines(), key=len))

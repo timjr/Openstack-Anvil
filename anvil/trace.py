@@ -15,15 +15,9 @@
 #    under the License.
 
 import json
-import os
 
-from anvil import date
 from anvil import exceptions as excp
 from anvil import shell as sh
-
-# Trace per line output format and file extension formats
-TRACE_FMT = ("%s - %s" + os.linesep)
-TRACE_EXT = ".trace"
 
 # Common trace actions
 AP_STARTED = "AP_STARTED"
@@ -37,22 +31,22 @@ PYTHON_INSTALL = "PYTHON_INSTALL"
 SYMLINK_MAKE = "SYMLINK_MAKE"
 
 
-def trace_fn(root_dir, name):
-    return sh.joinpths(root_dir, name + TRACE_EXT)
+def trace_filename(root_dir, base_name):
+    return sh.joinpths(root_dir, "%s.trace" % (base_name))
 
 
 class TraceWriter(object):
 
-    def __init__(self, trace_filename, break_if_there=True):
-        self.trace_fn = trace_filename
+    def __init__(self, trace_fn, break_if_there=True):
+        self.trace_fn = trace_fn
         self.started = False
         self.break_if_there = break_if_there
 
     def trace(self, cmd, action=None):
         if action is None:
-            action = date.rcf8222date()
+            action = ''
         if cmd is not None:
-            sh.append_file(self.trace_fn, TRACE_FMT % (cmd, action))
+            sh.append_file(self.trace_fn, "%s - %s\n" % (cmd, action))
 
     def filename(self):
         return self.trace_fn
@@ -116,8 +110,8 @@ class TraceWriter(object):
 
 class TraceReader(object):
 
-    def __init__(self, trace_filename):
-        self.trace_fn = trace_filename
+    def __init__(self, trace_fn):
+        self.trace_fn = trace_fn
         self.contents = None
 
     def filename(self):

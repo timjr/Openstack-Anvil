@@ -14,48 +14,62 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from StringIO import StringIO
+
+from anvil import action
 from anvil import colorizer
-from anvil import env_rc
 from anvil import log
-from anvil import settings
 from anvil import shell as sh
 from anvil import utils
 
-from anvil.actions import base
-
-from anvil.actions.base import PhaseFunctors
+from anvil.action import PhaseFunctors
 
 LOG = log.getLogger(__name__)
 
+# Which phase files we will remove
+# at the completion of the given stage
+KNOCK_OFF_MAP = {
+    'configure': ['unconfigure'],
+    'install': ['uninstall'],
+    'post-install': [
+        'unconfigure',
+        'pre-uninstall', 
+        'uninstall',
+        "post-uninstall",
+    ],
+}
 
-class InstallAction(base.Action):
 
-    @staticmethod
-    def get_lookup_name():
+class InstallAction(action.Action):
+    @property
+    def lookup_name(self):
         return 'install'
 
-    @staticmethod
-    def get_action_name():
-        return 'install'
-
-    def _write_rc_file(self):
-        fn = sh.abspth(settings.gen_rc_filename('core'))
-        writer = env_rc.RcWriter(self.cfg, self.root_dir)
-        if not sh.isfile(fn):
-            LOG.info("Generating a file at %s that will contain your environment settings.", colorizer.quote(fn))
-            writer.write(fn)
-        else:
-            LOG.info("Updating a file at %s that contains your environment settings.", colorizer.quote(fn))
-            am_upd = writer.update(fn)
-            LOG.info("Updated %s settings.", colorizer.quote(am_upd))
+    def _write_exports(self, component_order, instances, path):
+        entries = []
+        contents = StringIO()
+        contents.write("# Exports for action %s\n\n" % (self.name))
+        for c in component_order:
+            exports = instances[c].env_exports
+            if exports:
+                contents.write("# Exports for %s\n" % (c))
+                for (k, v) in exports.items():
+                    export_entry = "export %s=%s" % (k, sh.shellquote(str(v).strip()))
+                    entries.append(export_entry)
+                    contents.write("%s\n" % (export_entry))
+                contents.write("\n")
+        if entries:
+            sh.write_file(path, contents.getvalue())
+            utils.log_iterable(entries,
+                               header="Wrote to %s %s exports" % (path, len(entries)),
+                               logger=LOG)
 
     def _run(self, persona, component_order, instances):
-        self._write_rc_file()
         self._run_phase(
             PhaseFunctors(
                 start=lambda i: LOG.info('Downloading %s.', colorizer.quote(i.name)),
                 run=lambda i: i.download(),
-                end=lambda i, result: LOG.info("Performed %s downloads.", result),
+                end=lambda i, result: LOG.info("Performed %s downloads.", len(result))
             ),
             component_order,
             instances,
@@ -65,7 +79,7 @@ class InstallAction(base.Action):
             PhaseFunctors(
                 start=lambda i: LOG.info('Configuring %s.', colorizer.quote(i.name)),
                 run=lambda i: i.configure(),
-                end=lambda i, result: LOG.info("Configured %s items.", colorizer.quote(result)),
+                end=None,
             ),
             component_order,
             instances,
@@ -73,7 +87,7 @@ class InstallAction(base.Action):
             )
         self._run_phase(
             PhaseFunctors(
-                start=None,
+                start=lambda i: LOG.info('Preinstalling %s.', colorizer.quote(i.name)),
                 run=lambda i: i.pre_install(),
                 end=None,
             ),
@@ -85,17 +99,23 @@ class InstallAction(base.Action):
         def install_start(instance):
             subsystems = set(list(instance.subsystems))
             if subsystems:
-                utils.log_iterable(subsystems, logger=LOG,
+                utils.log_iterable(sorted(subsystems), logger=LOG,
                     header='Installing %s using subsystems' % colorizer.quote(instance.name))
             else:
                 LOG.info("Installing %s.", colorizer.quote(instance.name))
+
+        def install_finish(instance, result):
+            if not result:
+                LOG.info("Finished install of %s.", colorizer.quote(instance.name))
+            else:
+                LOG.info("Finished install of %s with result %s.",
+                         colorizer.quote(instance.name), result)
 
         self._run_phase(
             PhaseFunctors(
                 start=install_start,
                 run=lambda i: i.install(),
-                end=(lambda i, result: LOG.info("Finished install of %s items - check %s for information on what was done.",
-                        colorizer.quote(i.name), colorizer.quote(result))),
+                end=install_finish,
             ),
             component_order,
             instances,
@@ -111,5 +131,6 @@ class InstallAction(base.Action):
             instances,
             "Post-install",
             )
-        # Knock off anything connected to uninstall
-        self._delete_phase_files(['uninstall'])
+
+    def _get_opposite_stages(self, phase_name):
+        return ('uninstall', KNOCK_OFF_MAP.get(phase_name.lower(), []))

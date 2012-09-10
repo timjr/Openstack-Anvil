@@ -15,13 +15,15 @@
 #    under the License.
 
 from anvil import colorizer
-from anvil import component as comp
-from anvil import constants
+from anvil import components as comp
 from anvil import exceptions as excp
 from anvil import log as logging
 from anvil import shell as sh
+from anvil import utils
 
-from anvil.helpers import db as dbhelper
+import re
+
+from anvil.components.helpers import db as dbhelper
 
 LOG = logging.getLogger(__name__)
 
@@ -35,26 +37,14 @@ DASH_NAME = 'dashboard'
 
 # Config files messed with
 HORIZON_PY_CONF = "horizon_settings.py"
-HORIZON_PY_CONF_TGT = ['local', 'local_settings.py']
-HORIZON_APACHE_CONF = '000-default'
+HORIZON_APACHE_CONF = 'horizon.conf'
 CONFIGS = [HORIZON_PY_CONF, HORIZON_APACHE_CONF]
 
 # DB sync that needs to happen for horizon
-DB_SYNC_CMD = ['python', 'manage.py', 'syncdb']
-
-# Special apache directory (TODO describe more about this)
-BLACKHOLE_DIR = '.blackhole'
-
-# Other apache settings
-APACHE_ERROR_LOG_FN = "error.log"
-APACHE_ACCESS_LOG_FN = "access.log"
-APACHE_DEF_PORT = 80
+DB_SYNC_CMD = ['python', 'manage.py', 'syncdb', '--noinput']
 
 # Users which apache may not like starting as..
 BAD_APACHE_USERS = ['root']
-
-# Apache logs will go here
-LOGS_DIR = "logs"
 
 # This db will be dropped and created
 DB_NAME = 'horizon'
@@ -68,28 +58,31 @@ class HorizonUninstaller(comp.PythonUninstallComponent):
 class HorizonInstaller(comp.PythonInstallComponent):
     def __init__(self, *args, **kargs):
         comp.PythonInstallComponent.__init__(self, *args, **kargs)
-        self.log_dir = sh.joinpths(self.get_option('component_dir'), LOGS_DIR)
+        self.blackhole_dir = sh.joinpths(self.get_option('app_dir'), '.blackhole')
+        self.access_log =  sh.joinpths('/var/log/',
+                                       self.distro.get_command_config('apache', 'name'),
+                                       'horizon_access.log')
+        self.error_log =  sh.joinpths('/var/log/',
+                                       self.distro.get_command_config('apache', 'name'),
+                                       'horizon_error.log')
 
-    def _get_download_locations(self):
-        places = list()
-        places.append({
-            'uri': ("git", "horizon_repo"),
-            'branch': ("git", "horizon_branch"),
-        })
-        return places
+    def _filter_pip_requires_line(self, line):
+        # Knock off all nova, quantum, swift, keystone, cinder
+        # clients since anvil will be making sure those are installed
+        # instead of asking pip to do it...
+        if re.search(r'([n|q|s|k|g|c]\w+client)', line, re.I):
+            return None
+        return line
 
     def verify(self):
         comp.PythonInstallComponent.verify(self)
         self._check_ug()
 
-    def _get_symlinks(self):
-        links = comp.PythonInstallComponent._get_symlinks(self)
-        link_tgt = self.distro.get_command_config(
-            'apache', 'settings', 'conf-link-target',
-            quiet=True)
-        if link_tgt:
-            src = self._get_target_config_name(HORIZON_APACHE_CONF)
-            links[src] = link_tgt
+    @property
+    def symlinks(self):
+        links = super(HorizonInstaller, self).symlinks
+        links[self.access_log] = [sh.joinpths(self.link_dir, 'access.log')]
+        links[self.error_log] = [sh.joinpths(self.link_dir, 'error.log')]
         return links
 
     def _check_ug(self):
@@ -106,20 +99,34 @@ class HorizonInstaller(comp.PythonInstallComponent):
                     % (user, group))
             raise excp.ConfigException(msg)
 
-    def _get_target_config_name(self, config_name):
+    def target_config(self, config_name):
         if config_name == HORIZON_PY_CONF:
-            # FIXME don't write to checked out locations...
-            dash_dir = sh.joinpths(self.get_option('app_dir'), ROOT_DASH)
-            return sh.joinpths(dash_dir, *HORIZON_PY_CONF_TGT)
+            # FIXME(harlowja) don't write to checked out locations...
+            return sh.joinpths(self.get_option('app_dir'), ROOT_DASH, 'local', 'local_settings.py')
         else:
-            return comp.PythonInstallComponent._get_target_config_name(self, config_name)
+            return comp.PythonInstallComponent.target_config(self, config_name)
 
-    def _get_config_files(self):
+    @property
+    def config_files(self):
         return list(CONFIGS)
 
     def _setup_blackhole(self):
         # Create an empty directory that apache uses as docroot
-        self.tracewriter.dirs_made(*sh.mkdirslist(sh.joinpths(self.get_option('app_dir'), BLACKHOLE_DIR)))
+        self.tracewriter.dirs_made(*sh.mkdirslist(self.blackhole_dir))
+
+    def _setup_logs(self, clear):
+        log_fns = [self.access_log, self.error_log]
+        utils.log_iterable(log_fns, logger=LOG,
+                           header="Adjusting %s log files" % (len(log_fns)))
+        for fn in log_fns:
+            with sh.Rooted(True):
+                if clear:
+                    sh.unlink(fn, True)
+                sh.mkdirslist(sh.dirname(fn))
+                sh.touch_file(fn, die_if_there=False)
+                sh.chmod(fn, 0666)
+            self.tracewriter.file_touched(fn)
+        return len(log_fns)
 
     def _sync_db(self):
         # Initialize the horizon database (it stores sessions and notices shown to users).
@@ -128,67 +135,60 @@ class HorizonInstaller(comp.PythonInstallComponent):
         sh.execute(*DB_SYNC_CMD, cwd=self.get_option('app_dir'))
 
     def _setup_db(self):
-        dbhelper.drop_db(self.cfg, self.distro, DB_NAME)
-        dbhelper.create_db(self.cfg, self.distro, DB_NAME, utf8=True)
+        dbhelper.drop_db(distro=self.distro,
+                         dbtype=self.get_option('db', 'type'),
+                         dbname=DB_NAME,
+                         **utils.merge_dicts(self.get_option('db'),
+                                             dbhelper.get_shared_passwords(self)))
+        dbhelper.create_db(distro=self.distro,
+                           dbtype=self.get_option('db', 'type'),
+                           dbname=DB_NAME,
+                           **utils.merge_dicts(self.get_option('db'),
+                                               dbhelper.get_shared_passwords(self)))
 
-    def pre_install(self):
-        comp.PythonInstallComponent.pre_install(self)
-        self.tracewriter.dirs_made(*sh.mkdirslist(self.log_dir))
-        if self.cfg.getboolean('horizon', 'eliminate_pip_gits'):
-            fn = sh.joinpths(self.get_option('app_dir'), 'tools', 'pip-requires')
-            if sh.isfile(fn):
-                new_lines = []
-                for line in sh.load_file(fn).splitlines():
-                    if line.find("git://") != -1:
-                        new_lines.append("# %s" % (line))
-                    else:
-                        new_lines.append(line)
-                sh.write_file(fn, "\n".join(new_lines))
-
-    def _config_fixups(self):
-        pass
+    def _configure_files(self):
+        am = comp.PythonInstallComponent._configure_files(self)
+        am += self._setup_logs(self.get_bool_option('clear-logs'))
+        return am
 
     def post_install(self):
         comp.PythonInstallComponent.post_install(self)
-        self._setup_db()
-        self._sync_db()
-        self._setup_blackhole()
-        self._config_fixups()
+        if self.get_bool_option('db-sync'):
+            self._setup_db()
+            self._sync_db()
+        if self.get_bool_option('make-blackhole'):
+            self._setup_blackhole()
 
     def _get_apache_user_group(self):
-        user = self.cfg.getdefaulted('horizon', 'apache_user', sh.getuser())
-        group = self.cfg.getdefaulted('horizon', 'apache_group', sh.getgroupname())
-        return (user, group)
+        return (self.get_option('apache_user'), self.get_option('apache_group'))
 
-    def _get_param_map(self, config_fn):
+    def config_params(self, config_fn):
         # This dict will be used to fill in the configuration
         # params with actual values
-        mp = comp.PythonInstallComponent._get_param_map(self, config_fn)
+        mp = comp.PythonInstallComponent.config_params(self, config_fn)
         if config_fn == HORIZON_APACHE_CONF:
             (user, group) = self._get_apache_user_group()
             mp['GROUP'] = group
             mp['USER'] = user
-            mp['ACCESS_LOG'] = sh.joinpths(self.log_dir, APACHE_ACCESS_LOG_FN)
-            mp['ERROR_LOG'] = sh.joinpths(self.log_dir, APACHE_ERROR_LOG_FN)
             mp['HORIZON_DIR'] = self.get_option('app_dir')
-            mp['HORIZON_PORT'] = self.cfg.getdefaulted('horizon', 'port', APACHE_DEF_PORT)
-            mp['VPN_DIR'] = sh.joinpths(self.get_option('app_dir'), "vpn")
+            mp['HORIZON_PORT'] = self.get_int_option('port', default_value=80)
+            mp['APACHE_NAME'] = self.distro.get_command_config('apache', 'name')
+            mp['ERROR_LOG'] = self.error_log
+            mp['ACCESS_LOG'] = self.access_log
+            mp['BLACK_HOLE_DIR'] = self.blackhole_dir
         else:
-            mp['OPENSTACK_HOST'] = self.cfg.get('host', 'ip')
+            mp['OPENSTACK_HOST'] = self.get_option('ip')
             mp['DB_NAME'] = DB_NAME
-            mp['DB_USER'] = self.cfg.getdefaulted('db', 'sql_user', 'root')
-            mp['DB_PASSWORD'] = self.cfg.get_password('sql', dbhelper.PASSWORD_PROMPT)
-            mp['DB_HOST'] = self.cfg.get("db", "sql_host")
-            mp['DB_PORT'] = self.cfg.get("db", "port")
+            mp['DB_USER'] = self.get_option('db', 'user')
+            mp['DB_PASSWORD'] = dbhelper.get_shared_passwords(self)['pw']
+            mp['DB_HOST'] = self.get_option("db", "host")
+            mp['DB_PORT'] = self.get_option("db", "port")
         return mp
 
 
-class HorizonRuntime(comp.EmptyRuntime):
-    def __init__(self, *args, **kargs):
-        comp.EmptyRuntime.__init__(self, *args, **kargs)
-
+class HorizonRuntime(comp.ProgramRuntime):
     def start(self):
-        if self._status() != constants.STATUS_STARTED:
+        if self.status()[0].status != comp.STATUS_STARTED:
             start_cmd = self.distro.get_command('apache', 'start')
             sh.execute(*start_cmd, run_as_root=True, check_exit_code=True)
             return 1
@@ -201,22 +201,23 @@ class HorizonRuntime(comp.EmptyRuntime):
         return 1
 
     def stop(self):
-        if self._status() != constants.STATUS_STOPPED:
+        if self.status()[0].status != comp.STATUS_STOPPED:
             stop_cmd = self.distro.get_command('apache', 'stop')
             sh.execute(*stop_cmd, run_as_root=True, check_exit_code=True)
             return 1
         else:
             return 0
 
-    def _status(self):
+    def status(self):
         status_cmd = self.distro.get_command('apache', 'status')
         (sysout, stderr) = sh.execute(*status_cmd, run_as_root=True, check_exit_code=False)
-        combined = (str(sysout) + str(stderr)).lower()
+        combined = (sysout + stderr).lower()
+        st = comp.STATUS_UNKNOWN
         if combined.find("is running") != -1:
-            return constants.STATUS_STARTED
-        elif combined.find("not running") != -1 or \
-             combined.find("stopped") != -1 or \
-             combined.find('unrecognized') != -1:
-            return constants.STATUS_STOPPED
-        else:
-            return constants.STATUS_UNKNOWN
+            st = comp.STATUS_STARTED
+        elif utils.has_any(combined, 'stopped', 'unrecognized', 'not running'):
+            st = comp.STATUS_STOPPED
+        return [
+            comp.ProgramStatus(status=st,
+                               details=(sysout + stderr).strip()),
+        ]

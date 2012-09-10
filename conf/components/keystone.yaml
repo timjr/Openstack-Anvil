@@ -1,0 +1,47 @@
+# Settings for component keystone
+---
+# Where we download this from...
+get_from: "git://github.com/openstack/keystone.git?branch=master"
+
+# Where is the keystone auth host at?
+auth_host: "$(auto:ip)"
+auth_port: 35357
+auth_proto: http
+
+# Where is the keystone service host at?
+service_host: "$(auto:ip)"
+service_port: 5000
+service_proto: http
+
+# Needed for setting up your database
+db:
+  type: "$(db:type)"
+  user: "$(db:user)"
+  host: "$(db:host)"
+  port: "$(db:port)"
+  
+# Needed when running to setup the right roles/endpoints...
+glance:
+  api_port: "$(glance:api_port)"
+  protocol: "$(glance:protocol)"
+  reg_port: "$(glance:reg_port)"
+  
+nova: 
+  api_host: "$(nova:api_host)"
+  api_port: "$(nova:api_port)"
+  s3_host: "$(nova:s3_host)"
+  s3_port: "$(nova:s3_port)"
+  volume_host: "$(nova:volume_host)"
+  volume_port: "$(nova:volume_port)"
+  ec2_host: "$(nova:ec2_host)"
+  ec2_port: "$(nova:ec2_port)"
+  ec2_admin_host: "$(nova:ec2_admin_host)"
+  ec2_admin_port: "$(nova:ec2_admin_port)"
+  protocol: "$(nova:protocol)"
+
+wanted_passwords:
+  service_token: 'service admin token'
+  admin_password: 'keystone admin user'
+  demo_password: 'keystone demo user'
+  service_password: 'service authentication password'
+...

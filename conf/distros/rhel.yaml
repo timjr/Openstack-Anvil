@@ -1,0 +1,481 @@
+---
+# RedHat Enterprise Linux 6.0+
+name: rhel
+platform_pattern: redhat(.*)
+packager_name: anvil.packaging.yum:YumPackager
+commands:
+    apache:
+        name: httpd
+        restart: service httpd restart
+        start: service httpd start
+        status: service httpd status
+        stop: service httpd stop
+    git:
+        checkout: git checkout
+        clone: git clone
+    libvirt:
+        restart: service libvirtd restart
+        status: service libvirtd status
+        # This is just used to check that libvirt will work with a given protocol
+        verify: virsh -c $VIRT_PROTOCOL uri
+    mysql:
+        # NOTE: we aren't stopping any sql injection...
+        create_db: mysql --user=$USER --password=$PASSWORD -e 
+                   "CREATE DATABASE $DB CHARACTER SET $CHARACTER_SET;"
+        drop_db: mysql --user=$USER --password=$PASSWORD -e 
+                 "DROP DATABASE IF EXISTS $DB;"
+        grant_all: mysql --user=$USER --password=$PASSWORD -e 
+                   "GRANT ALL PRIVILEGES ON *.* TO '$USER'@'%' IDENTIFIED BY '$PASSWORD'; FLUSH PRIVILEGES;"
+        restart: service mysqld restart
+        set_pwd: mysql --user=$USER --password=$OLD_PASSWORD -e 
+                 "USE mysql; UPDATE user SET password=PASSWORD('$NEW_PASSWORD') WHERE User='$USER';  FLUSH PRIVILEGES;"
+        start: service mysqld start
+        status: service mysqld status
+        stop: service mysqld stop
+    pip: pip-python
+    # Commands used when setting up python projects
+    python:
+        setup: python setup.py develop
+        unsetup: python setup.py develop --uninstall
+    # Where component symlinks will go, the component name will become a directory
+    # under this directory where its configuration files will be connected to there
+    # actual location.
+    base_link_dir: /etc
+    rabbit-mq:
+        change_password: rabbitmqctl change_password
+        restart: service rabbitmq-server restart
+        start: service rabbitmq-server start
+        status: service rabbitmq-server status
+        stop: service rabbitmq-server stop                 
+components:
+    cinder-client:
+        action_classes:
+            install: anvil.components.cinder_client:CinderClientInstaller
+            running: anvil.components.cinder_client:CinderClientRuntime
+            uninstall: anvil.components.cinder_client:CinderClientUninstaller
+            test: anvil.components:PythonTestingComponent
+            package: anvil.packaging.rpm:PythonPackager
+    db:
+        action_classes:
+            install: anvil.distros.rhel:DBInstaller
+            running: anvil.components.db:DBRuntime
+            uninstall: anvil.components.db:DBUninstaller
+            test: anvil.components:EmptyTestingComponent
+            package: anvil.packaging.rpm:DependencyPackager
+        packages:
+        -   name: mysql
+        -   name: mysql-server
+    general:
+        action_classes:
+            install: anvil.components.pkglist:Installer
+            running: anvil.components:EmptyRuntime
+            uninstall: anvil.components.pkglist:Uninstaller
+            test: anvil.components:EmptyTestingComponent
+            package: anvil.packaging.rpm:DependencyPackager
+        packages:
+        # Shared system packages
+        -   name: coreutils
+            removable: false
+        -   name: curl
+            removable: false
+        -   name: dnsmasq-utils
+            removable: false
+        -   name: euca2ools
+        -   name: gawk
+            removable: false
+        -   name: git
+            removable: false
+        -   name: iputils
+            removable: false
+        -   name: libxml2-devel
+            removable: false
+        -   name: libxslt-devel
+            removable: false
+        -   name: lsof
+            removable: false
+        -   name: mlocate
+            removable: false
+        -   name: openssh-server
+            removable: false
+        -   name: psmisc
+            removable: false
+        -   name: sudo
+            removable: false
+        -   name: tcpdump
+            removable: false
+        -   name: unzip
+            removable: false
+        -   name: wget
+            removable: false
+        # Shared python packages
+        -   name: python
+            removable: false
+        -   name: python-devel
+            removable: false
+        -   name: python-distutils-extra
+            removable: false
+        -   name: python-setuptools
+            removable: false
+        pip_to_package:
+        # Shared pypi packages + there package information.
+        # Packages is what is really used for installation (the pypi name
+        # is just for matching since the general section is not python code).
+        -   name: pylint 
+            package:
+                name: pylint
+                removable: false
+        -   name: anyjson
+            package:
+                name: python-anyjson
+        -   name: argparse 
+            package:
+                name: python-argparse
+                removable: false
+        -   name: babel
+            package:
+                name: python-babel
+        -   name: eventlet
+            package:
+                name: python-eventlet
+        -   name: greenlet
+            package:
+                name: python-greenlet
+        -   name: httplib2
+            package:
+                name: python-httplib2
+                removable: false
+        -   name: iso8601
+            package:
+                name: python-iso8601
+        -   name: lockfile
+            package:
+                name: python-lockfile
+        -   name: lxml
+            package:
+                name: python-lxml
+                removable: false
+        -   name: mock
+            package:
+                name: python-mock
+        -   name: mox
+            package:
+                name: python-mox
+        -   name: netaddr
+            package:
+                name: python-netaddr
+        -   name: nose
+            package:
+                name: python-nose1.1
+                packager_name: anvil.distros.rhel:YumPackagerWithRelinks
+                packager_options:
+                    links:
+                        - source: "/usr/lib/python2.6/site-packages/nose-1*-py2.6.egg/nose"
+                          target: "/usr/lib/python2.6/site-packages/nose"
+                        - source: "/usr/bin/nosetests1.1"
+                          target: "/usr/bin/nosetests"
+        -   name: paste
+            package:
+                name: python-paste
+        -   name: pastedeploy
+            package:
+                name: python-paste-deploy1.5
+                packager_name: anvil.distros.rhel:YumPackagerWithRelinks
+                packager_options:
+                    links:
+                        - source: "/usr/lib/python2.6/site-packages/PasteDeploy-1.5*-py2.6.egg/paste/deploy"
+                          target: "/usr/lib/python2.6/site-packages/paste/deploy"
+        -   name: pep8
+            package:
+                name: python-pep8
+                removable: false
+        -   name: pip
+            package:
+                name: python-pip
+                removable: false
+        -   name: routes
+            package:
+                name: python-routes1.12
+                packager_name: anvil.distros.rhel:YumPackagerWithRelinks
+                packager_options:
+                    links:
+                        - source: "/usr/lib/python2.6/site-packages/Routes-1.*-py2.6.egg/routes"
+                          target: "/usr/lib/python2.6/site-packages/routes"
+        -   name: simplejson
+            package:
+                name: python-simplejson
+        -   name: unittest2
+            package:
+                name: python-unittest2
+                removable: false
+        -   name: webob
+            package:
+                name: python-webob1.0
+                # Need to relink it so that it will work without modifications
+                # Since new packages in rhel must never use the same names
+                # as previous ones (this overrides that)
+                packager_name: anvil.distros.rhel:YumPackagerWithRelinks
+                packager_options:
+                    links:
+                        - source: "/usr/lib/python2.6/site-packages/WebOb-*-py2.6.egg/webob/"
+                          target: "/usr/lib/python2.6/site-packages/webob"
+        pips:
+        # Pips that aren't packages yet (or versions aren't right...)
+        -   name: coverage
+        -   name: distribute
+            removable: false
+        -   name: nose-exclude
+        -   name: nosehtmloutput
+        -   name: openstack.nose_plugin
+        -   name: passlib
+        -   name: prettytable
+            version: "0.6" # This is not right, 0.6 and 0.6.1 are needed??
+        -   name: pycrypto
+            options: # Force it to upgrade
+                - "-U"
+            removable: false
+        -   name: requests
+        -   name: sphinx
+        -   name: sqlalchemy # Need this or nova pukes with 'Did not recognize type 'BIGINT' of column 'bw_in''
+            options: # Force it to upgrade
+                - "-U"
+        -   name: sqlalchemy-migrate
+    glance:
+        action_classes:
+            install: anvil.components.glance:GlanceInstaller
+            running: anvil.components.glance:GlanceRuntime
+            uninstall: anvil.components.glance:GlanceUninstaller
+            test: anvil.components.glance:GlanceTester
+            package: anvil.packaging.rpm:PythonPackager
+        # When parsing 'tools/pip-requires' and 
+        # 'tools/test-requires' (if they exist)
+        # the following map will be used to translate names
+        # and versions inside those files into distribution
+        # package names equivalents (if possible)
+        pip_to_package:
+        -   name: pysendfile
+            package:
+                name: pysendfile
+        -   name: kombu
+            package:
+                # Only needed for notifications???
+                name: python-kombu
+        packages:
+        -   name: MySQL-python
+        pips:
+        # Pips that aren't packages yet (and not in the 'general' section)
+        -   name: boto
+            version: "2.1.1"
+        -   name: wsgiref
+        -   name: xattr
+        -   name: jsonschema
+    glance-client:
+        action_classes:
+            install: anvil.components.glance_client:GlanceClientInstaller
+            running: anvil.components.glance_client:GlanceClientRuntime
+            uninstall: anvil.components.glance_client:GlanceClientUninstaller
+            test: anvil.components.glance_client:GlanceClientTester
+            package: anvil.packaging.rpm:PythonPackager
+        pips:
+        -   name: nosexcover
+        -   name: setuptools-git
+        -   name: warlock
+            version: "0.1.0"
+    horizon:
+        action_classes:
+            install: anvil.distros.rhel:HorizonInstaller
+            running: anvil.components.horizon:HorizonRuntime
+            uninstall: anvil.components.horizon:HorizonUninstaller
+            test: anvil.components:PythonTestingComponent
+            package: anvil.packaging.rpm:PythonPackager
+        pip_to_package:
+        -   name: pytz
+            package:
+                name: pytz
+        packages:
+        -   name: httpd
+        -   name: mod_wsgi
+        -   name: nodejs
+        -   name: nodejs-compat-symlinks
+        -   name: npm
+        pips:
+        -   name: django
+            version: "1.4"
+        -   name: django-compressor
+        -   name: django-nose
+        -   name: django-openstack-auth
+        -   name: nosexcover
+        -   name: selenium
+    keystone:
+        action_classes:
+            install: anvil.components.keystone:KeystoneInstaller
+            running: anvil.components.keystone:KeystoneRuntime
+            uninstall: anvil.components.keystone:KeystoneUninstaller
+            test: anvil.components.keystone:KeystoneTester
+            package: anvil.packaging.rpm:PythonPackager
+        packages:
+        -   name: MySQL-python
+        pip_to_package:
+        -   name: netifaces
+            package:
+                name: python-netifaces
+        pips:
+        -   name: pam
+            version: '0.1.4'
+        -   name: nosexcover
+        -   name: webtest  # This version in package form conflicts with webob1.0
+    keystone-client:
+        action_classes:
+            install: anvil.components.keystone_client:KeyStoneClientInstaller
+            running: anvil.components.keystone_client:KeyStoneClientRuntime
+            uninstall: anvil.components.keystone_client:KeyStoneClientUninstaller
+            test: anvil.components:PythonTestingComponent
+            package: anvil.packaging.rpm:PythonPackager
+    nova:
+        action_classes:
+            install: anvil.distros.rhel:NovaInstaller
+            running: anvil.components.nova:NovaRuntime
+            uninstall: anvil.components.nova:NovaUninstaller
+            test: anvil.components.nova:NovaTester
+            package: anvil.packaging.rpm:PythonPackager
+        packages:
+        -   name: MySQL-python
+        -   name: dnsmasq
+            removable: false
+        -   name: ebtables
+            removable: false
+        -   name: fuse
+            removable: false
+        -   name: iptables
+            removable: false
+        -   name: iputils
+            removable: false
+        -   name: kpartx
+            removable: false
+        -   name: parted
+            removable: false
+        -   name: sqlite
+            removable: false
+        -   name: vconfig
+            removable: false
+        pip_to_package:
+        -   name: amqplib
+            package:
+                name: python-amqplib
+        -   name: suds
+            package: 
+                name: python-suds
+        -   name: paramiko
+            package:
+                name: python-paramiko
+        -   name: feedparser
+            package:
+                name: python-feedparser
+        pips:
+        -   name: Cheetah
+            version: "2.4.4"
+        -   name: python-daemon
+            version: "1.5.5"
+        subsystems:
+            cpu:
+                packages:
+                -   name: iscsi-initiator-utils
+                    removable: false
+                -   name: libguestfs
+                    removable: false
+                -   name: libguestfs-mount
+                    removable: false
+                -   name: libguestfs-tools
+                    removable: false
+                -   name: libvirt
+                    removable: false
+                -   name: libvirt-client
+                    removable: false
+                -   name: libvirt-python
+                    removable: false
+                -   name: lvm2
+                    removable: false
+                -   name: qemu-img
+                    removable: false
+                -   name: qemu-kvm
+                    removable: false
+            vol:
+                packages:
+                -   name: iscsi-initiator-utils
+                    removable: false
+                -   name: lvm2
+                    removable: false
+                -   name: scsi-target-utils
+                    removable: false
+    nova-client:
+        action_classes:
+            install: anvil.components.nova_client:NovaClientInstaller
+            running: anvil.components.nova_client:NovaClientRuntime
+            uninstall: anvil.components.nova_client:NovaClientUninstaller
+            test: anvil.components:PythonTestingComponent
+            package: anvil.packaging.rpm:PythonPackager
+    no-vnc:
+        action_classes:
+            install: anvil.components.novnc:NoVNCInstaller
+            running: anvil.components.novnc:NoVNCRuntime
+            uninstall: anvil.components.novnc:NoVNCUninstaller
+            test: anvil.components:EmptyTestingComponent
+            package: anvil.components:EmptyPackagingComponent
+        packages:
+        -   name: python-websockify
+    openstack-client:
+        action_classes:
+            install: anvil.components.openstack_client:OpenStackClientInstaller
+            running: anvil.components.openstack_client:OpenStackClientRuntime
+            uninstall: anvil.components.openstack_client:OpenStackClientUninstaller
+            test: anvil.components.openstack_client:OpenStackClientTester
+            package: anvil.packaging.rpm:PythonPackager
+        pips:
+        -   name: cliff
+        pip_to_package:
+        -   name: keyring
+            package:
+                name: python-keyring
+    quantum-client:
+        action_classes:
+            install: anvil.components.quantum_client:QuantumClientInstaller
+            running: anvil.components.quantum_client:QuantumClientRuntime
+            uninstall: anvil.components.quantum_client:QuantumClientUninstaller
+            test: anvil.components:PythonTestingComponent
+            package: anvil.packaging.rpm:PythonPackager
+        pips:
+        -   name: cliff
+        # This seems to cause conflicts with
+        # the yum version that comes installed so use the pip version
+        -   name: pyparsing 
+            removable: false
+    rabbit-mq:
+        action_classes:
+            install: anvil.components.rabbit:RabbitInstaller
+            running: anvil.distros.rhel:RabbitRuntime
+            uninstall: anvil.components.rabbit:RabbitUninstaller
+            test: anvil.components:EmptyTestingComponent
+            package: anvil.packaging.rpm:DependencyPackager
+        packages:
+        -   name: rabbitmq-server
+            pre-install:
+            -   cmd:
+                - service
+                - qpidd
+                - stop
+                ignore_failure: true
+                run_as_root: true
+            -   cmd:
+                - chkconfig
+                - qpidd
+                - 'off'
+                ignore_failure: true
+                run_as_root: true
+    swift-client:
+        action_classes:
+            install: anvil.components.swift_client:SwiftClientInstaller
+            running: anvil.components.swift_client:SwiftClientRuntime
+            uninstall: anvil.components.swift_client:SwiftClientUninstaller
+            test: anvil.components:PythonTestingComponent
+            package: anvil.packaging.rpm:PythonPackager
+...
+

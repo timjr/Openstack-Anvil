@@ -22,6 +22,11 @@ from anvil import log as logging
 LOG = logging.getLogger(__name__)
 
 
+def construct_entry_point(fullname, *args, **kwargs):
+    cls = import_entry_point(fullname)
+    return cls(*args, **kwargs)
+
+
 def partition(fullname):
     """
     The name should be in dotted.path:ClassName syntax.
@@ -38,12 +43,10 @@ def import_entry_point(fullname):
     """
     (module_name, classname) = partition(fullname)
     try:
-        LOG.debug("Importing module: %s", module_name)
         module = __import__(module_name)
         for submodule in module_name.split('.')[1:]:
             module = getattr(module, submodule)
         cls = getattr(module, classname)
-        LOG.debug("Importing class under that module: %s", classname)
     except (ImportError, AttributeError, ValueError) as err:
         raise RuntimeError('Could not load entry point %s: %s' %
                            (fullname, err))

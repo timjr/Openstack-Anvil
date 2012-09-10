@@ -13,21 +13,23 @@ Made to be as simple as possible, but not to simple.
 Prerequisites
 =============
 
+RTFM
+----
+
+Read the great documentation for developers/admins at
+
+- http://docs.openstack.org/developer/
+- http://docs.openstack.org/
+
+This will vastly help you understand what the
+configurations and options do when anvil configures them.
+
 Linux
 -----
 
-One of the tested Linux distributions (RHEL 6.2, Ubuntu 11.10, Fedora
-16)
+One of the tested Linux distributions (RHEL 6.2+ until further updated)
 
-You can get Ubuntu 11.10 (**64-bit** is preferred) from
-http://releases.ubuntu.com/11.10/
-
-You can get RHEL 6.2 (**64-bit** is preferred) from
-http://rhn.redhat.com/.
-
-You can get Fedora 16 (**64-bit** is preferred) from
-https://fedoraproject.org/get-fedora, so don’t worry if you do not have
-a RHN subscription.
+You can get RHEL 6.2+ (**64-bit** is preferred) from http://rhn.redhat.com/.
 
 Networking
 ----------
@@ -35,48 +37,31 @@ Networking
 **Important!**
 --------------
 
-Since networking can affect how your cloud runs please check out this
-link:
+Since networking can affect how your cloud runs please check out this link:
 
 http://docs.openstack.org/trunk/openstack-compute/admin/content/configuring-networking-on-the-compute-node.html
 
 Check out the root article and the sub-chapters there to understand more
 of what these settings mean.
 
-**This is typically one of the hardest aspects of *OpenStack* to
-configure and get right!**
+**This is typically one of the hardest aspects of OpenStack to configure and get right!**
 
 --------------
 
-ANVIL will configure the network in a identical manner to version
-*1.0*. This means that the default network manager will be the
-*FlatDHCPManager*. The following settings are relevant in configuring
-your network.
+The following settings in ``conf/components/nova.yaml``  are an example of settings that will
+affect the configuration of your compute nodes network.
 
 ::
 
-     flat_network_bridge = ${FLAT_NETWORK_BRIDGE:-br100}
-     flat_interface = ${FLAT_INTERFACE:-eth0}
-     public_interface = ${PUBLIC_INTERFACE:-eth0}
+     flat_network_bridge: br100
+     flat_interface: eth0
+     public_interface: eth0
+     fixed_range: 10.0.0.0/24
+     fixed_network_size: 256
+     floating_range: 172.24.4.224/28
+     test_floating_pool: test
+     test_floating_range: 192.168.253.0/29
 
-The above settings will affect exactly which network interface is used
-as the *source* interface which will be used as a network *bridge*.
-
-::
-
-    fixed_range = ${NOVA_FIXED_RANGE:-10.0.0.0/24}
-    fixed_network_size = ${NOVA_FIXED_NETWORK_SIZE:-256} 
-    floating_range = ${FLOATING_RANGE:-172.24.4.224/28}
-    test_floating_pool = ${TEST_FLOATING_POOL:-test}
-    test_floating_range = ${TEST_FLOATING_RANGE:-192.168.253.0/29}
-
-The above settings will determine exactly how nova when running assigns
-IP addresses. By default a single network is created using
-*fixed\_range* with a network size specified by *fixed\_network\_size*.
-Note the size here is *256* which is the number of addresses in the
-*10.0.0.0/24* subnet (*32 - 24* bits is 8 bits or 256 addresses). The
-floating pool is similar to fixed addresses (**TODO** describe this
-more).
 
 Installation
 ============
@@ -84,13 +69,11 @@ Installation
 Pre-setup
 ---------
 
-Since RHEL/Fedora requires a `tty`_ to perform ``sudo`` commands we need
+Since RHEL requires a `tty`_ to perform ``sudo`` commands we need
 to disable this so ``sudo`` can run without a `tty`_. This seems needed
 since nova and other components attempt to do ``sudo`` commands. This
-isn’t possible in RHEL/Fedora unless you disable this (since those
-instances won’t have a `tty`_ ).
-
-**For RHEL and Fedora 16:**
+isn’t possible in RHEL unless you disable this (since those
+instances won’t have a `tty`_).
 
 ::
 
@@ -116,48 +99,28 @@ to reboot.
      $ sudo reboot
 
 Also to avoid qemu errors please follow the solution @ https://bugs.launchpad.net/anvil/+bug/985786
-which will ensure that the ``qemu`` user can write to your instances directory. If needed edit ``anvil.ini``
-and also adjust the ``instances_path`` option (under the ``nova`` section).
+which will ensure that the ``qemu`` user can write to your instances directory. If needed edit ``conf/components/nova.yaml``
+and also adjust the ``instances_path`` option.
 
-This can be typically solved by running the following (and then updating ``anvil.ini``):
+This can be typically solved by running the following (and then updating the ``instances_path`` option)
 
 ::
 
     $ sudo mkdir -pv /home/openstack
     $ sudo chmod -R a+rwx /home/openstack
 
-
-**For Ubuntu:**
-
-You are off the hook.
-
-Users
------
-
-We need to add a admin user so that horizon can run under `apache`_.
-
-**For Ubuntu:**
+Also as documented at http://docs.openstack.org/essex/openstack-compute/admin/content/qemu.html#fixes-rhel-qemu
+please run the following (after installation).
 
 ::
 
-    $ apt-get install sudo -y
-    $ sudo adduser horizon
-    $ sudo adduser horizon admin
+    $ setsebool -P virt_use_execmem on
+    $ sudo ln -s /usr/libexec/qemu-kvm /usr/bin/qemu-system-x86_64
+    $ sudo service libvirtd restart
 
-**For RHEL/Fedora 16:**
-
-You are off the hook as long as your user has ``sudo`` access.
 
 Get git!
 --------
-
-**For Ubuntu:**
-
-::
-
-    $ sudo apt-get install git -y
-
-**For RHEL/Fedora 16:**
 
 ::
 
@@ -173,92 +136,15 @@ We’ll grab the latest version of ANVIL via git:
 
     $ git clone git://github.com/yahoo/Openstack-Anvil.git anvil
 
-Now setup the prerequisites needed to run (select the appropriate shell script for your distro):
-
-::
-
-    $ cd anvil/warmups && sudo ./$DISTRO.sh
-
 Configuration
 -------------
 
-Apache configuration
-~~~~~~~~~~~~~~~~~~~~
+Any configuration to be updated should now be done.
 
-We need to adjust the configuration of ANVIL to reflect the above
-user (``iff you created a user``).
+Please edit the corresponding files in ``conf/components/`` or ``conf/components/personas``
+to fit your desired configuration of nova/glance and the other OpenStack components.
 
-Open ``conf/anvil.ini``
-
-**Change section:**
-
-::
-
-    [horizon]
-
-    # What user will apache be serving from.
-    #
-    # Root will typically not work (for apache on most distros)
-    # sudo adduser <username> then sudo adduser <username> admin will be what you want to set this up (in ubuntu)
-    # I typically use user "horizon" for ubuntu and the runtime user (who will have sudo access) for RHEL.
-    #
-    # NOTE: If blank the currently executing user will be used.
-    apache_user = ${APACHE_USER:-}
-
-**To:**
-
-::
-
-    [horizon]
-
-    # What user will apache be serving from.
-    #
-    # Root will typically not work (for apache on most distros)
-    # sudo adduser <username> then sudo adduser <username> admin will be what you want to set this up (in ubuntu)
-    # I typically use user "horizon" for ubuntu and the runtime user (who will have sudo access) for RHEL.
-    #
-    # NOTE: If blank the currently executing user will be used.
-    apache_user = ${APACHE_USER:-horizon}
-
-Network configuration
-~~~~~~~~~~~~~~~~~~~~~
-
-We need to adjust the configuration of ANVIL to reflect our above network configuration.
-
-Please reference:
-
-http://docs.openstack.org/diablo/openstack-compute/admin/content/configuring-networking-on-the-compute-node.html
-
-If you need to adjust those variables the matching config variables in ``anvil.ini`` are:
-
-::
-
-    # Network settings
-    # Very useful to read over:
-    # http://docs.openstack.org/cactus/openstack-compute/admin/content/configuring-networking-on-the-compute-node.html
-    fixed_range = ${NOVA_FIXED_RANGE:-10.0.0.0/24}
-    fixed_network_size = ${NOVA_FIXED_NETWORK_SIZE:-256}
-    network_manager = ${NET_MAN:-FlatDHCPManager}
-    public_interface = ${PUBLIC_INTERFACE:-eth0}
-
-    # DHCP Warning: If your flat interface device uses DHCP, there will be a hiccup while the network 
-    # is moved from the flat interface to the flat network bridge. This will happen when you launch 
-    # your first instance. Upon launch you will lose all connectivity to the node, and the vm launch will probably fail.
-    #
-    # If you are running on a single node and don't need to access the VMs from devices other than 
-    # that node, you can set the flat interface to the same value as FLAT_NETWORK_BRIDGE. This will stop the network hiccup from occurring.
-    flat_interface = ${FLAT_INTERFACE:-eth0}
-    vlan_interface = ${VLAN_INTERFACE:-$(nova:public_interface)}
-    flat_network_bridge = ${FLAT_NETWORK_BRIDGE:-br100}
-
-    # Test floating pool and range are used for testing. 
-    # They are defined here until the admin APIs can replace nova-manage
-    floating_range = ${FLOATING_RANGE:-172.24.4.224/28}
-    test_floating_pool = ${TEST_FLOATING_POOL:-test}
-    test_floating_range = ${TEST_FLOATING_RANGE:-192.168.253.0/29}
-
-
-If you are using a ``FlatManager`` and RH/Fedora then you might want read and follow:
+If you are using a ``FlatManager`` and RH/Fedora then you might want to read and follow:
 
 http://www.techotopia.com/index.php/Creating_an_RHEL_5_KVM_Networked_Bridge_Interface
     
@@ -269,13 +155,24 @@ Now install *OpenStacks* components by running the following:
 
 ::
 
-    sudo ./smithy -a install -d ~/openstack
+    sudo ./smithy -a install
 
 You should see a set of distribution packages and/or pips being
 installed, python setups occurring and configuration files being written
 as ANVIL figures out how to install your desired components (if you
-desire more informational output add a ``-v`` or a ``-vv`` to that
+desire more informational output add a ``-v``to that
 command).
+
+Testing
+----------
+
+Now (if you choose) you can run each *OpenStack* components unit tests by running the following:
+
+::
+
+    sudo ./smithy -a test
+
+You should see a set of unit tests being ran (ideally with zero failures).
 
 Starting
 --------
@@ -285,10 +182,8 @@ Now that you have installed *OpenStack* you can now start your
 
 ::
 
-    sudo ./smithy -a start -d ~/openstack
+    sudo ./smithy -a start
 
-If you desire more informational output add a ``-v`` or a ``-vv`` to
-that command.
 
 Check horizon
 ~~~~~~~~~~~~~
@@ -301,7 +196,7 @@ system auto-generate one for you you will need to check the final output
 of the above install and pick up the password that was generated which
 should be displayed at key ``passwords/horizon_keystone_admin``. You can
 also later find this authentication information in the generated
-``core.rc`` file.
+``passwords.yaml`` file.
 
 If you see a login page and can access horizon then:
 
@@ -314,7 +209,7 @@ In your ANVIL directory:
 
 ::
 
-    source core.rc
+    source /etc/anvil/install.rc
 
 This should set up the environment variables you need to run OpenStack
 CLI tools:
@@ -332,29 +227,28 @@ EC2 apis run the following to get your EC2 certs:
 
 ::
 
-    euca.sh $OS_USERNAME $OS_TENANT_NAME
+    ./euca.sh $OS_USERNAME $OS_TENANT_NAME
 
 It broke?
 ~~~~~~~~~
 
-*Otherwise* you may have to look at the output of what was started. To
-accomplish this you may have to log at the ``stderr`` and ``stdout``
-that is being generated from the running *OpenStack* process (by default
-they are forked as daemons). For this information check the output of
-the start command for a line like
-``Check * for traces of what happened``. This is usually a good starting
-point, to check out those files contents and then look up the files that
-contain the applications `PID`_ and ``stderr`` and ``stdout``.
+First run the following to check the status of each component.
 
-If the install section had warning messages or exceptions were thrown
-there, that may also be the problem. Sometimes running the uninstall
-section below will clean this up, your mileage may vary though.
+::
 
-Another tip is to edit run with more verbose logging by running with the
-following ``-v`` option or the ``-vv`` option. This may give you more
-insights by showing you what was executed/installed/configured
-(uninstall & start by installing again to get the additional logging
-output).
+    sudo ./smithy -a status
+
+If you do not see all green status then you should run the following and see
+if any of the ``stderr`` and ``stdout`` files will give you more information
+about what is occuring
+
+::
+
+    sudo ./smithy -a status --show
+    
+This will dump out those files (truncated to not be to verbose) so that anything
+peculaliar can be seen. If nothing can be then go to the installation directory (typically ``~/openstack``)
+and check the ``traces`` directory of each component and check if anything looks fishy.
 
 Stopping
 --------
@@ -364,7 +258,7 @@ the following:
 
 ::
 
-    sudo ./smithy -a stop -d ~/openstack
+    sudo ./smithy -a stop
 
 You should see a set of stop actions happening and ``stderr`` and
 ``stdout`` and ``pid`` files being removed (if you desire more
@@ -391,7 +285,7 @@ can uninstall them by running the following:
 
 ::
 
-    sudo ./smithy -a uninstall -d ~/openstack
+    sudo ./smithy -a uninstall
 
 You should see a set of packages, configuration and directories, being
 removed (if you desire more informational output add a ``-v`` or a
