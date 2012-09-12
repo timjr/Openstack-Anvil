@@ -14,6 +14,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import os
+import time
+
 from anvil import action
 from anvil import colorizer
 from anvil import log
@@ -70,6 +73,12 @@ class StartAction(action.Action):
             instances,
             "Post-start",
             )
+
+        # quick check that the main openstack processes are running
+        time.sleep(10) # sometimes it takes them a moment to fail...
+        rc = os.system(os.path.dirname(__file__) + "/../../tools/os-process-stat.py")
+        if rc != 0:
+            raise Exception("Some processes failed to start.")
 
     def _get_opposite_stages(self, phase_name):
         return ('stop', KNOCK_OFF_MAP.get(phase_name.lower(), []))
