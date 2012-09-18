@@ -8,6 +8,7 @@ components:
 - keystone-client
 - glance
 - glance-client
+- cinder-client
 - nova
 - nova-client
 # Super client, so install after other clients
@@ -26,12 +27,21 @@ options:
 subsystems:
     glance:
     - api
-    - reg
+    - registry
+    keystone:
+    - all
     nova:
-    - api
-    - cpu
-    - net
-    - sched
+    - api-ec2
+    - api-metadata
+    - api-os-compute
+    - cert
+    - compute
+    - consoleauth
+    - dhcpbridge
+    - network
+    - novncproxy
+    - scheduler
+    - xvpvncproxy
 supports:
 - rhel
 ...
