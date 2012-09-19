@@ -24,8 +24,6 @@ from keyring.backend import UncryptedFileKeyring
 from keyring.util import properties
 
 from anvil import log as logging
-from anvil import shell as sh
-from anvil import utils
 
 LOG = logging.getLogger(__name__)
 RAND_PW_LEN = 20
@@ -47,8 +45,10 @@ class FixedCryptedFileKeyring(CryptedFileKeyring):
 
 class KeyringProxy(object):
     def __init__(self, path, keyring_encrypted=False, enable_prompt=True, random_on_empty=True):
-        self.path = path
         self.keyring_encrypted = keyring_encrypted
+        if self.keyring_encrypted and not path.endswith(".crypt"):
+            path = "%s.crypt" % (path)
+        self.path = path
         if keyring_encrypted:
             self.ring = FixedCryptedFileKeyring()
         else:
