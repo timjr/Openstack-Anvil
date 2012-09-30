@@ -13,6 +13,7 @@ components:
 - nova-client
 # Super client, so install after other clients
 - openstack-client
+- yahoo-poo
 options:
     nova:
         db-sync: true
