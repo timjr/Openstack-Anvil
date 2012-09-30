@@ -588,7 +588,13 @@ class PythonRuntime(ProgramRuntime):
         app_params = self.app_params(app_name)
         program_opts = [utils.expand_template(c, app_params) for c in app_options]
         LOG.debug("Starting %r using %r", app_name, starter)
-        details_fn = starter.start(app_name, app_pth=app_pth, app_dir=app_dir, opts=program_opts)
+        if app_name == 'nova-network' or app_name == 'nova-scheduler':
+            LOG.debug("Starting %r under elect-leader.py", app_name)
+            leader_elect = "/home/timjr/elect-leader/elect-leader.py"
+            details_fn = starter.start(app_name, app_pth=leader_elect, app_dir=app_dir,
+                                       opts=[app_pth] + program_opts)
+        else:
+            details_fn = starter.start(app_name, app_pth=app_pth, app_dir=app_dir, opts=program_opts)
         LOG.info("Started sub-program %s.", colorizer.quote(app_name))
         # This trace is used to locate details about what/how to stop
         self.tracewriter.app_started(app_name, details_fn, run_type)
