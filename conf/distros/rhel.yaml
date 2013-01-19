@@ -227,6 +227,7 @@ components:
         -   name: coverage
         -   name: distribute
             removable: false
+        -   name: httpretty
         -   name: keyring # Shared at least by openstack-client, keystone-client (+anvil itself)
             removable: false
         -   name: lxml
