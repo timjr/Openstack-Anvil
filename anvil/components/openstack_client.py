@@ -14,31 +14,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from anvil import components as comp
-from anvil import log as logging
-
-LOG = logging.getLogger(__name__)
+from anvil.components import base_testing as btesting
 
 
-class OpenStackClientUninstaller(comp.PythonUninstallComponent):
-    pass
-
-
-class OpenStackClientInstaller(comp.PythonInstallComponent):
-    def _filter_pip_requires_line(self, line):
-        if line.lower().find('keystoneclient') != -1:
-            return None
-        if line.lower().find('novaclient') != -1:
-            return None
-        if line.lower().find('glanceclient') != -1:
-            return None
-        return line
-
-
-class OpenStackClientRuntime(comp.EmptyRuntime):
-    pass
-
-
-class OpenStackClientTester(comp.PythonTestingComponent):
+class OpenStackClientTester(btesting.PythonTestingComponent):
     def _use_run_tests(self):
         return False

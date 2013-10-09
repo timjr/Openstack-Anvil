@@ -15,6 +15,7 @@
 #    under the License.
 
 import contextlib
+import hashlib
 import os
 import re
 import tarfile
@@ -60,6 +61,7 @@ ROOT_CHECKS = [
 # Used to match various file names with what could be a ram disk image
 RAMDISK_CHECKS = [
     re.compile(r"(.*)-initrd$", re.I),
+    re.compile(r"initrd[-]?(.*)$", re.I),
     re.compile(r"(.*)initramfs(.*)$", re.I),
     re.compile(r'(.*?)ari-tty/image$', re.I),
 ]
@@ -73,6 +75,13 @@ SKIP_CHECKS = [
 BAD_EXTENSIONS = ['md5', 'sha', 'sfv']
 
 
+def _hash_it(content, hash_algo='md5'):
+    hasher = hashlib.new(hash_algo)
+    hasher.update(content)
+    digest = hasher.hexdigest()
+    return digest
+
+
 class Unpacker(object):
 
     def _get_tar_file_members(self, arc_fn):
@@ -82,22 +91,20 @@ class Unpacker(object):
             for tmemb in tfh.getmembers():
                 if not tmemb.isfile():
                     continue
-                fn = tmemb.name
-                files.append(fn)
+                files.append(tmemb.name)
         return files
 
     def _pat_checker(self, fn, patterns):
-        (root_fn, fn_ext) = os.path.splitext(fn)
+        (_root_fn, fn_ext) = os.path.splitext(fn)
         if utils.has_any(fn_ext.lower(), *BAD_EXTENSIONS):
             return False
         for pat in patterns:
-            if pat.match(fn):
+            if pat.search(fn):
                 return True
         return False
 
     def _find_pieces(self, files, files_location):
-        """
-        Match files against the patterns in KERNEL_CHECKS,
+        """Match files against the patterns in KERNEL_CHECKS,
         RAMDISK_CHECKS, and ROOT_CHECKS to determine which files
         contain which image parts.
         """
@@ -129,8 +136,7 @@ class Unpacker(object):
                 return sh.pipe_in_out(mfh, ofh)
 
     def _describe(self, root_fn, ramdisk_fn, kernel_fn):
-        """
-        Make an "info" dict that describes the path, disk format, and
+        """Make an "info" dict that describes the path, disk format, and
         container format of each component of an image.
         """
         info = dict()
@@ -198,8 +204,7 @@ class Unpacker(object):
                                 header="Found %s images from a %s" % (len(pieces), src_type))
 
     def _unpack_dir(self, dir_path):
-        """
-        Pick through a directory to figure out which files are which
+        """Pick through a directory to figure out which files are which
         image pieces, and create a dict that describes them.
         """
         potential_files = set()
@@ -258,11 +263,13 @@ class Registry(object):
 
 class Image(object):
 
-    def __init__(self, client, url):
+    def __init__(self, client, url, is_public, cache_dir):
         self.client = client
         self.registry = Registry(client)
         self.url = url
         self.parsed_url = urlparse.urlparse(url)
+        self.is_public = is_public
+        self.cache_dir = cache_dir
 
     def _check_name(self, name):
         LOG.info("Checking if image %s already exists already in glance.", colorizer.quote(name))
@@ -279,11 +286,14 @@ class Image(object):
             self._check_name(kernel_image_name)
             LOG.info('Adding kernel %s to glance.', colorizer.quote(kernel_image_name))
             LOG.info("Please wait installing...")
+            args = {
+                'container_format': kernel['container_format'],
+                'disk_format': kernel['disk_format'],
+                'name': kernel_image_name,
+                'is_public': self.is_public,
+            }
             with open(kernel['file_name'], 'r') as fh:
-                resource = self.client.images.create(data=fh,
-                    container_format=kernel['container_format'],
-                    disk_format=kernel['disk_format'],
-                    name=kernel_image_name)
+                resource = self.client.images.create(data=fh, **args)
                 kernel_id = resource.id
 
         # Upload the ramdisk, if we have one
@@ -294,26 +304,31 @@ class Image(object):
             self._check_name(ram_image_name)
             LOG.info('Adding ramdisk %s to glance.', colorizer.quote(ram_image_name))
             LOG.info("Please wait installing...")
+            args = {
+                'container_format': initrd['container_format'],
+                'disk_format': initrd['disk_format'],
+                'name': ram_image_name,
+                'is_public': self.is_public,
+            }
             with open(initrd['file_name'], 'r') as fh:
-                resource = self.client.images.create(data=fh,
-                    container_format=initrd['container_format'],
-                    disk_format=initrd['disk_format'],
-                    name=ram_image_name)
+                resource = self.client.images.create(data=fh, **args)
                 initrd_id = resource.id
 
         # Upload the root, we must have one...
         LOG.info('Adding image %s to glance.', colorizer.quote(image_name))
         self._check_name(image_name)
-        args = dict()
-        args['name'] = image_name
+        args = {
+            'name': image_name,
+            'container_format': location['container_format'],
+            'disk_format': location['disk_format'],
+            'is_public': self.is_public,
+            'properties': {},
+        }
         if kernel_id or initrd_id:
-            args['properties'] = dict()
             if kernel_id:
                 args['properties']['kernel_id'] = kernel_id
             if initrd_id:
                 args['properties']['ramdisk_id'] = initrd_id
-        args['container_format'] = location['container_format']
-        args['disk_format'] = location['disk_format']
         LOG.info("Please wait installing...")
         with open(location['file_name'], 'r') as fh:
             resource = self.client.images.create(data=fh, **args)
@@ -333,39 +348,77 @@ class Image(object):
     def _is_url_local(self):
         return (sh.exists(self.url) or (self.parsed_url.scheme == '' and self.parsed_url.netloc == ''))
 
+    def _cached_paths(self):
+        digest = _hash_it(self.url)
+        path = sh.joinpths(self.cache_dir, digest)
+        details_path = sh.joinpths(self.cache_dir, digest + ".details")
+        return (path, details_path)
+
+    def _validate_cache(self, cache_path, details_path):
+        for path in [cache_path, details_path]:
+            if not sh.exists(path):
+                return False
+        check_files = []
+        try:
+            unpack_info = utils.load_yaml_text(sh.load_file(details_path))
+            check_files.append(unpack_info['file_name'])
+            if 'kernel' in unpack_info:
+                check_files.append(unpack_info['kernel']['file_name'])
+            if 'ramdisk' in unpack_info:
+                check_files.append(unpack_info['ramdisk']['file_name'])
+        except Exception:
+            return False
+        for path in check_files:
+            if not sh.isfile(path):
+                return False
+        return True
+
     def install(self):
         url_fn = self._extract_url_fn()
         if not url_fn:
             raise IOError("Can not determine file name from url: %r" % (self.url))
-        with utils.tempdir() as tdir:
+        (cache_path, details_path) = self._cached_paths()
+        use_cached = self._validate_cache(cache_path, details_path)
+        if use_cached:
+            LOG.info("Found valid cached image + metadata at: %s", colorizer.quote(cache_path))
+            unpack_info = utils.load_yaml_text(sh.load_file(details_path))
+        else:
+            sh.mkdir(cache_path)
             if not self._is_url_local():
-                (fetched_fn, bytes_down) = down.UrlLibDownloader(self.url, sh.joinpths(tdir, url_fn)).download()
+                (fetched_fn, bytes_down) = down.UrlLibDownloader(self.url,
+                                                                 sh.joinpths(cache_path, url_fn)).download()
                 LOG.debug("For url %s we downloaded %s bytes to %s", self.url, bytes_down, fetched_fn)
             else:
                 fetched_fn = self.url
-            unpack_info = Unpacker().unpack(url_fn, fetched_fn, tdir)
-            tgt_image_name = self._generate_img_name(url_fn)
-            img_id = self._register(tgt_image_name, unpack_info)
-            return (tgt_image_name, img_id)
+            unpack_info = Unpacker().unpack(url_fn, fetched_fn, cache_path)
+            sh.write_file(details_path, utils.prettify_yaml(unpack_info))
+        tgt_image_name = self._generate_img_name(url_fn)
+        img_id = self._register(tgt_image_name, unpack_info)
+        return (tgt_image_name, img_id)
 
 
 class UploadService(object):
 
-    def __init__(self, params):
-        self.params = params
+    def __init__(self, glance, keystone, cache_dir='/usr/share/anvil/glance/cache', is_public=True):
+        self.glance_params = glance
+        self.keystone_params = keystone
+        self.cache_dir = cache_dir
+        self.is_public = is_public
 
     def _get_token(self, kclient_v2):
         LOG.info("Getting your keystone token so that image uploads may proceed.")
-        params = self.params['keystone']
-        client = kclient_v2.Client(username=params['demo_user'],
-            password=params['demo_password'],
-            tenant_name=params['demo_tenant'],
-            auth_url=params['endpoints']['public']['uri'])
+        k_params = self.keystone_params
+        client = kclient_v2.Client(username=k_params['admin_user'],
+                                   password=k_params['admin_password'],
+                                   tenant_name=k_params['admin_tenant'],
+                                   auth_url=k_params['endpoints']['public']['uri'])
         return client.auth_token
 
     def install(self, urls):
         am_installed = 0
         try:
+            # Done at a function level since this module may be used
+            # before these libraries actually exist...
             gclient_v1 = importer.import_module('glanceclient.v1.client')
             gexceptions = importer.import_module('glanceclient.common.exceptions')
             kclient_v2 = importer.import_module('keystoneclient.v2_0.client')
@@ -376,11 +429,10 @@ class UploadService(object):
         if urls:
             try:
                 # Ensure all services ok
-                for n in ['glance', 'keystone']:
-                    params = self.params[n]
+                for params in [self.glance_params, self.keystone_params]:
                     utils.wait_for_url(params['endpoints']['public']['uri'])
-                params = self.params['glance']
-                client = gclient_v1.Client(endpoint=params['endpoints']['public']['uri'],
+                g_params = self.glance_params
+                client = gclient_v1.Client(endpoint=g_params['endpoints']['public']['uri'],
                                            token=self._get_token(kclient_v2))
             except (RuntimeError, gexceptions.ClientException,
                     kexceptions.ClientException, IOError) as e:
@@ -390,7 +442,10 @@ class UploadService(object):
                                 header="Attempting to download+extract+upload %s images" % len(urls))
             for url in urls:
                 try:
-                    (name, img_id) = Image(client, url).install()
+                    img_handle = Image(client, url,
+                                       is_public=self.is_public,
+                                       cache_dir=self.cache_dir)
+                    (name, img_id) = img_handle.install()
                     LOG.info("Installed image named %s with image id %s.", colorizer.quote(name), colorizer.quote(img_id))
                     am_installed += 1
                 except (IOError,

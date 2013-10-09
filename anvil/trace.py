@@ -27,7 +27,7 @@ DOWNLOADED = "DOWNLOADED"
 FILE_TOUCHED = "FILE_TOUCHED"
 PIP_INSTALL = 'PIP_INSTALL'
 PKG_INSTALL = "PKG_INSTALL"
-PYTHON_INSTALL = "PYTHON_INSTALL"
+PKG_UPGRADE = "PKG_UPGRADE"
 SYMLINK_MAKE = "SYMLINK_MAKE"
 
 
@@ -36,7 +36,6 @@ def trace_filename(root_dir, base_name):
 
 
 class TraceWriter(object):
-
     def __init__(self, trace_fn, break_if_there=True):
         self.trace_fn = trace_fn
         self.started = False
@@ -59,17 +58,6 @@ class TraceWriter(object):
             sh.touch_file(self.trace_fn, die_if_there=self.break_if_there)
             self.started = True
             self.dirs_made(*trace_dirs)
-
-    def py_installed(self, name, where):
-        self._start()
-        what = dict()
-        what['name'] = name
-        what['where'] = where
-        self.trace(PYTHON_INSTALL, json.dumps(what))
-
-    def cfg_file_written(self, fn):
-        self._start()
-        self.trace(CFG_WRITING_FILE, fn)
 
     def symlink_made(self, link):
         self._start()
@@ -95,9 +83,13 @@ class TraceWriter(object):
         self._start()
         self.trace(FILE_TOUCHED, fn)
 
-    def package_installed(self, pkg_info):
+    def package_installed(self, pkg_name):
         self._start()
-        self.trace(PKG_INSTALL, json.dumps(pkg_info))
+        self.trace(PKG_INSTALL, pkg_name)
+
+    def package_upgraded(self, pkg_name):
+        self._start()
+        self.trace(PKG_UPGRADE, pkg_name)
 
     def app_started(self, name, info_fn, how):
         self._start()
@@ -109,7 +101,6 @@ class TraceWriter(object):
 
 
 class TraceReader(object):
-
     def __init__(self, trace_fn):
         self.trace_fn = trace_fn
         self.contents = None
@@ -159,16 +150,6 @@ class TraceReader(object):
                     apps.append((entry.get('name'), entry.get('trace_fn'), entry.get('how')))
         return apps
 
-    def py_listing(self):
-        lines = self.read()
-        py_entries = list()
-        for (cmd, action) in lines:
-            if cmd == PYTHON_INSTALL and len(action):
-                entry = json.loads(action)
-                if type(entry) is dict:
-                    py_entries.append((entry.get("name"), entry.get("where")))
-        return py_entries
-
     def download_locations(self):
         lines = self.read()
         locations = list()
@@ -210,16 +191,6 @@ class TraceReader(object):
                 links.append(action)
         return links
 
-    def files_configured(self):
-        lines = self.read()
-        files = list()
-        for (cmd, action) in lines:
-            if cmd == CFG_WRITING_FILE and len(action):
-                files.append(action)
-        files = list(set(files))
-        files.sort()
-        return files
-
     def pips_installed(self):
         lines = self.read()
         pips_installed = list()
@@ -235,13 +206,8 @@ class TraceReader(object):
 
     def packages_installed(self):
         lines = self.read()
-        pkgs_installed = list()
         pkg_list = list()
         for (cmd, action) in lines:
             if cmd == PKG_INSTALL and len(action):
                 pkg_list.append(action)
-        for pkg_data in pkg_list:
-            pkg_info = json.loads(pkg_data)
-            if type(pkg_info) is dict:
-                pkgs_installed.append(pkg_info)
-        return pkgs_installed
+        return pkg_list

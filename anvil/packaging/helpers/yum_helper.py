@@ -14,51 +14,136 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import json
+import sys
+
+from anvil import exceptions as excp
+from anvil import log as logging
 from anvil import shell as sh
 
-# See http://yum.baseurl.org/api/yum-3.2.26/yum-module.html
-from yum import YumBase
-from yum.packages import PackageObject
-
-# Cache of yumbase object
-_yum_base = None
+LOG = logging.getLogger(__name__)
 
 
-def _make_yum_base():
-    global _yum_base
-    if _yum_base is None:
-        # This seems needed...
-        # otherwise 'cannot open Packages database in /var/lib/rpm' starts to happen
-        with sh.Rooted(True):
-            _yum_base = YumBase()
-            _yum_base.setCacheDir(force=True)
-    return _yum_base
+def _parse_json(value):
+    """Load JSON from string
 
-
-def is_installed(name, version=None):
-    if get_installed(name, version):
-        return True
+    If string is whitespace-only, returns None
+    """
+    value = value.strip()
+    if value:
+        return json.loads(value)
     else:
+        return None
+
+
+class Helper(object):
+
+    def __init__(self, log_dir):
+        # Executables we require to operate
+        self.yyoom_executable = sh.which("yyoom", ["tools/"])
+        # Executable logs will go into this directory
+        self._log_dir = log_dir
+        # Caches of installed and available packages
+        self._installed = None
+        self._available = None
+
+    def _yyoom(self, arglist, cmd_type):
+        cmdline = [self.yyoom_executable, '--verbose']
+        cmdline.extend(arglist)
+        out_filename = sh.joinpths(self._log_dir, "yyoom-%s.log" % (cmd_type))
+        (stdout, _) = sh.execute_save_output2(cmdline,
+                                              stderr_filename=out_filename)
+        return _parse_json(stdout)
+
+    def _traced_yyoom(self, arglist, cmd_type, tracewriter):
+        try:
+            data = self._yyoom(arglist, cmd_type)
+        except excp.ProcessExecutionError:
+            ex_type, ex, ex_tb = sys.exc_info()
+            try:
+                data = _parse_json(ex.stdout)
+            except Exception as e:
+                LOG.error("Failed to parse YYOOM output: %s", e)
+            else:
+                self._handle_transaction_data(tracewriter, data)
+            raise ex_type, ex, ex_tb
+        self._handle_transaction_data(tracewriter, data)
+
+    @staticmethod
+    def _handle_transaction_data(tracewriter, data):
+        if not data:
+            return
+        failed_names = None
+        try:
+            if tracewriter:
+                for action in data:
+                    if action['action_type'] == 'install':
+                        tracewriter.package_installed(action['name'])
+                    elif action['action_type'] == 'upgrade':
+                        tracewriter.package_upgraded(action['name'])
+            failed_names = [action['name']
+                            for action in data
+                            if action['action_type'] == 'error']
+        except Exception as e:
+            LOG.error("Failed to handle transaction data: %s", e)
+        else:
+            if failed_names:
+                raise RuntimeError("Yum failed on %s" % ", ".join(failed_names))
+
+    def is_installed(self, name):
+        matches = self.find_installed(name)
+        if len(matches):
+            return True
         return False
 
+    def find_installed(self, name):
+        installed = self.list_installed()
+        return [item for item in installed if item['name'] == name]
 
-def get_installed(name, version=None):
-    # This seems needed...
-    # otherwise 'cannot open Packages database in /var/lib/rpm' starts to happen
-    with sh.Rooted(True):
-        yb = _make_yum_base()
-        pkg_obj = yb.doPackageLists(pkgnarrow='installed',
-                                    ignore_case=True, patterns=[name])
-    whats_installed = pkg_obj.installed
-    if not whats_installed:
-        return None
-    # Compare whats installed to a fake package that will
-    # represent what might be installed...
-    fake_pkg = PackageObject()
-    fake_pkg.name = name
-    if version:
-        fake_pkg.version = str(version)
-    for installed_pkg in whats_installed:
-        if installed_pkg.verGE(fake_pkg):
-            return installed_pkg
-    return None
+    def list_available(self):
+        if self._available is None:
+            self._available = self._yyoom(['list', 'available'], 'list-available')
+        return list(self._available)
+
+    def list_installed(self):
+        if self._installed is None:
+            self._installed = self._yyoom(['list', 'installed'], 'list-installed')
+        return list(self._installed)
+
+    def builddep(self, srpm_path, tracewriter=None):
+        self._traced_yyoom(['builddep', srpm_path],
+                           'builddep-%s' % sh.basename(srpm_path), tracewriter)
+
+    def _reset(self):
+        # reset the caches:
+        self._installed = None
+        self._available = None
+
+    def clean(self):
+        try:
+            self._yyoom(['cleanall'], 'cleanall')
+        finally:
+            self._reset()
+
+    def transaction(self, install_pkgs=(), remove_pkgs=(), tracewriter=None):
+        if not install_pkgs and not remove_pkgs:
+            return
+
+        cmdline = ['transaction']
+        for pkg in install_pkgs:
+            cmdline.append('--install')
+            cmdline.append(pkg)
+        for pkg in remove_pkgs:
+            cmdline.append('--erase')
+            cmdline.append(pkg)
+
+        try:
+            cmd_type = 'transaction'
+            if install_pkgs:
+                cmd_type += "-install"
+            if remove_pkgs:
+                cmd_type += "-remove"
+
+            self._traced_yyoom(cmdline, cmd_type, tracewriter)
+        finally:
+            self._reset()

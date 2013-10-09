@@ -14,23 +14,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from anvil import action
 from anvil import colorizer
 from anvil import log
 
-from anvil.action import PhaseFunctors
+from anvil.actions import base as action
 
 LOG = log.getLogger(__name__)
 
-# Which phase files we will remove
-# at the completion of the given stage
-KNOCK_OFF_MAP = {
-    'stopped': [
-        'pre-start',
-        'start',
-        "post-start",
-    ],
-}
 
 class StopAction(action.Action):
     @property
@@ -43,16 +33,15 @@ class StopAction(action.Action):
         return components
 
     def _run(self, persona, component_order, instances):
+        removals = ['pre-start', 'start', 'post-start']
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=lambda i: LOG.info('Stopping %s.', colorizer.quote(i.name)),
                 run=lambda i: i.stop(),
                 end=lambda i, result: LOG.info("Stopped %s items.", colorizer.quote(result)),
             ),
             component_order,
             instances,
-            "Stopped"
+            "stopped",
+            *removals
             )
-
-    def _get_opposite_stages(self, phase_name):
-        return ('start', KNOCK_OFF_MAP.get(phase_name.lower(), []))

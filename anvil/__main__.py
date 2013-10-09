@@ -18,6 +18,7 @@
 #    under the License.
 
 import os
+import re
 import sys
 import time
 import traceback as tb
@@ -28,49 +29,40 @@ sys.path.insert(0, os.path.abspath(os.getcwd()))
 from anvil import actions
 from anvil import colorizer
 from anvil import distro
-from anvil import env
 from anvil import exceptions as excp
 from anvil import log as logging
 from anvil import opts
+from anvil.packaging import yum
 from anvil import persona
+from anvil import pprint
 from anvil import settings
 from anvil import shell as sh
 from anvil import utils
 
-from anvil.pprint import center_text
-
 
 LOG = logging.getLogger()
-ANVIL_DIR = "/etc/anvil/"
-SETTINGS_FN = "/etc/anvil/settings.yaml"
 
 
 def run(args):
+    """Starts the execution after args have been parsed and logging has been setup.
     """
-    Starts the execution after args have been parsed and logging has been setup.
 
-    Arguments: N/A
-    Returns: True for success to run, False for failure to start
-    """
     LOG.debug("CLI arguments are:")
     utils.log_object(args, logger=LOG, level=logging.DEBUG, item_max_len=128)
 
     # Keep the old args around so we have the full set to write out
     saved_args = dict(args)
     action = args.pop("action", '').strip().lower()
-    if action not in actions.names():
-        raise excp.OptionException("Invalid action name %r specified!" % (action))
+    if re.match(r"^moo[o]*$", action):
+        return
 
-    # Determine + setup the root directory...
-    # If not provided attempt to locate it via the environment control files
-    args_root_dir = args.pop("dir")
-    root_dir = env.get_key('INSTALL_ROOT')
-    if not root_dir:
-        root_dir = args_root_dir
-    if not root_dir:
-        root_dir = sh.joinpths(sh.gethomedir(), 'openstack')
-    root_dir = sh.abspth(root_dir)
-    sh.mkdir(root_dir)
+    try:
+        runner_cls = actions.class_for(action)
+    except Exception as ex:
+        raise excp.OptionException(str(ex))
+
+    if runner_cls.needs_sudo:
+        ensure_perms()
 
     persona_fn = args.pop('persona_fn')
     if not persona_fn:
@@ -78,20 +70,26 @@ def run(args):
     if not sh.isfile(persona_fn):
         raise excp.OptionException("Invalid persona file %r specified!" % (persona_fn))
 
+    # Determine the root directory...
+    root_dir = sh.abspth(args.pop("dir"))
+
+    (repeat_string, line_max_len) = utils.welcome()
+    print(pprint.center_text("Action Runner", repeat_string, line_max_len))
+
     # !!
     # Here on out we should be using the logger (and not print)!!
     # !!
 
     # Stash the dryrun value (if any)
     if 'dryrun' in args:
-        env.set("ANVIL_DRYRUN", str(args['dryrun']))
+        sh.set_dry_run(args['dryrun'])
 
-    # Ensure the anvil etc dir is there if others are about to use it
-    ensure_anvil_dir()
+    # Ensure the anvil dirs are there if others are about to use it...
+    ensure_anvil_dirs(root_dir)
 
     # Load the distro
     dist = distro.load(settings.DISTRO_DIR)
-    
+
     # Load + verify the person
     try:
         persona_obj = persona.load(persona_fn)
@@ -99,15 +97,12 @@ def run(args):
     except Exception as e:
         raise excp.OptionException("Error loading persona file: %s due to %s" % (persona_fn, e))
 
+    yum.YumDependencyHandler.jobs = args["jobs"]
     # Get the object we will be running with...
-    runner_cls = actions.class_for(action)
     runner = runner_cls(distro=dist,
                         root_dir=root_dir,
                         name=action,
                         cli_opts=args)
-
-    (repeat_string, line_max_len) = utils.welcome()
-    print(center_text("Action Runner", repeat_string, line_max_len))
 
     # Now that the settings are known to work, store them for next run
     store_current_settings(saved_args)
@@ -131,8 +126,8 @@ def load_previous_settings():
     settings_prev = None
     try:
         # Don't use sh here so that we always
-        # read this (even if dry-run)    
-        with open(SETTINGS_FN, 'r') as fh:
+        # read this (even if dry-run)
+        with open("/etc/anvil/settings.yaml", 'r') as fh:
             settings_prev = utils.load_yaml_text(fh.read())
     except Exception:
         # Errors could be expected on format problems
@@ -141,42 +136,48 @@ def load_previous_settings():
     return settings_prev
 
 
-def ensure_anvil_dir():
-    if not sh.isdir(ANVIL_DIR):
-        with sh.Rooted(True):
-            os.makedirs(ANVIL_DIR)
-            (uid, gid) = sh.get_suids()
-            sh.chown_r(ANVIL_DIR, uid, gid)
+def ensure_anvil_dirs(root_dir):
+    wanted_dirs = ["/etc/anvil/", '/usr/share/anvil/']
+    if root_dir and root_dir not in wanted_dirs:
+        wanted_dirs.append(root_dir)
+    for d in wanted_dirs:
+        if sh.isdir(d):
+            continue
+        LOG.info("Creating anvil directory at path: %s", d)
+        sh.mkdir(d)
 
 
-def store_current_settings(settings):
+def store_current_settings(c_settings):
     try:
         # Remove certain keys that just shouldn't be saved
-        to_save = dict(settings)
+        to_save = dict(c_settings)
         for k in ['action', 'verbose', 'dryrun']:
-            if k in settings:
+            if k in c_settings:
                 to_save.pop(k, None)
-        with sh.Rooted(True):
-            with open(SETTINGS_FN, 'w') as fh:
-                fh.write("# Anvil last used settings\n")
-                fh.write(utils.add_header(SETTINGS_FN, utils.prettify_yaml(to_save)))
-                fh.flush()
-        (uid, gid) = sh.get_suids()
-        sh.chown(SETTINGS_FN, uid, gid)
+        with open("/etc/anvil/settings.yaml", 'w') as fh:
+            fh.write("# Anvil last used settings\n")
+            fh.write(utils.add_header("/etc/anvil/settings.yaml",
+                     utils.prettify_yaml(to_save)))
+            fh.flush()
     except Exception as e:
-        LOG.debug("Failed writing to %s due to %s", SETTINGS_FN, e)
+        LOG.debug("Failed writing to %s due to %s", "/etc/anvil/settings.yaml", e)
+
+
+def ensure_perms():
+    # Ensure we are running as root to start...
+    if not sh.got_root():
+        raise excp.PermException("Root access required")
 
 
 def main():
-    """
-    Starts the execution of without
-    injecting variables into the global namespace. Ensures that
-    logging is setup and that sudo access is available and in-use.
+    """Starts the execution of anvil without injecting variables into
+    the global namespace. Ensures that logging is setup and that sudo access
+    is available and in-use.
 
     Arguments: N/A
-    Returns: 1 for success, 0 for failure
+    Returns: 1 for success, 0 for failure and 2 for permission change failure.
     """
-    
+
     # Do this first so people can see the help message...
     args = opts.parse(load_previous_settings())
 
@@ -185,53 +186,54 @@ def main():
     if args['verbose'] or args['dryrun']:
         log_level = logging.DEBUG
     logging.setupLogging(log_level)
-
     LOG.debug("Log level is: %s" % (logging.getLevelName(log_level)))
 
-    def clean_exc(exc):
+    def print_exc(exc):
+        if not exc:
+            return
         msg = str(exc).strip()
-        if msg.endswith(".") or msg.endswith("!"):
-            return msg
-        else:
-            return msg + "."
+        if not msg:
+            return
+        if not (msg.endswith(".") or msg.endswith("!")):
+            msg = msg + "."
+        if msg:
+            print(msg)
 
-    def traceback_fn():
+    def print_traceback():
         traceback = None
         if log_level < logging.INFO:
             # See: http://docs.python.org/library/traceback.html
             # When its not none u get more detailed info about the exception
             traceback = sys.exc_traceback
         tb.print_exception(sys.exc_type, sys.exc_value,
-                traceback, file=sys.stdout)
-
-    try:
-        # Drop to usermode
-        sh.user_mode(quiet=False)
-    except excp.AnvilException as e:
-        print(clean_exc(e))
-        print("This program should be running via %s, is it not?" % (colorizer.quote('sudo', quote_color='red')))
-        return 1
+                           traceback, file=sys.stdout)
 
     try:
         run(args)
         utils.goodbye(True)
         return 0
+    except excp.PermException as e:
+        print_exc(e)
+        print(("This program should be running via %s as it performs some root-only commands is it not?")
+                % (colorizer.quote('sudo', quote_color='red')))
+        return 2
     except excp.OptionException as e:
-        print(clean_exc(e))
+        print_exc(e)
         print("Perhaps you should try %s" % (colorizer.quote('--help', quote_color='red')))
         return 1
     except Exception:
         utils.goodbye(False)
-        traceback_fn()
+        print_traceback()
         return 1
 
 
 if __name__ == "__main__":
-    rc = main()
+    return_code = main()
     # Switch back to root mode for anything
     # that needs to run in that mode for cleanups and etc...
-    try:
-        sh.root_mode(quiet=False)
-    except excp.AnvilException:
-        pass
-    sys.exit(rc)
+    if return_code != 2:
+        try:
+            sh.root_mode(quiet=False)
+        except Exception:
+            pass
+    sys.exit(return_code)

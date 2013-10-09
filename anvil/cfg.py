@@ -16,10 +16,12 @@
 
 # This one doesn't keep comments but does seem to work better
 import ConfigParser
-from ConfigParser import (NoSectionError, NoOptionError)
+from ConfigParser import NoOptionError
+from ConfigParser import NoSectionError
 
-import io
 import re
+
+from StringIO import StringIO
 
 # This one keeps comments but has some weirdness with it
 import iniparse
@@ -34,78 +36,132 @@ LOG = logging.getLogger(__name__)
 
 
 class StringiferMixin(object):
+    def __init__(self):
+        pass
+
     def stringify(self, fn=None):
-        contents = ''
-        with io.BytesIO() as outputstream:
-            self.write(outputstream)
-            outputstream.flush()
-            contents = utils.add_header(fn, outputstream.getvalue())
+        outputstream = StringIO()
+        self.write(outputstream)
+        contents = utils.add_header(fn, outputstream.getvalue())
         return contents
 
 
-class IgnoreMissingMixin(object):
+class ConfigHelperMixin(object):
     DEF_INT = 0
     DEF_FLOAT = 0.0
     DEF_BOOLEAN = False
     DEF_BASE = None
 
+    def __init__(self, templatize_values=False):
+        self.templatize_values = templatize_values
+
     def get(self, section, option):
         value = self.DEF_BASE
         try:
-            value = super(IgnoreMissingMixin, self).get(section, option)
+            value = super(ConfigHelperMixin, self).get(section, option)
         except NoSectionError:
             pass
         except NoOptionError:
             pass
         return value
 
+    def _template_value(self, option, value):
+        if not self.templatize_values:
+            return value
+        tpl_value = StringIO()
+        safe_value = str(option)
+        for c in ['-', ' ', '\t', ':', '$', '%', '(', ')']:
+            safe_value = safe_value.replace(c, '_')
+        tpl_value.write("$(%s)" % (safe_value.upper().strip()))
+        comment_value = str(value).strip().encode('string_escape')
+        for c in ['(', ')', '$']:
+            comment_value = comment_value.replace(c, '')
+        comment_value = comment_value.strip()
+        tpl_value.write(" # %s" % (comment_value))
+        return tpl_value.getvalue()
+
     def set(self, section, option, value):
         if not self.has_section(section) and section.lower() != 'default':
             self.add_section(section)
-        super(IgnoreMissingMixin, self).set(section, option, value)
+        value = self._template_value(option, value)
+        super(ConfigHelperMixin, self).set(section, option, value)
 
     def remove_option(self, section, option):
         if self.has_option(section, option):
-            super(IgnoreMissingMixin, self).remove_option(section, option)
+            super(ConfigHelperMixin, self).remove_option(section, option)
 
     def getboolean(self, section, option):
         if not self.has_option(section, option):
             return self.DEF_BOOLEAN
-        return super(IgnoreMissingMixin, self).getboolean(section, option)
+        return super(ConfigHelperMixin, self).getboolean(section, option)
 
     def getfloat(self, section, option):
         if not self.has_option(section, option):
             return self.DEF_FLOAT
-        return super(IgnoreMissingMixin, self).getfloat(section, option)
+        return super(ConfigHelperMixin, self).getfloat(section, option)
 
     def getint(self, section, option):
         if not self.has_option(section, option):
             return self.DEF_INT
-        return super(IgnoreMissingMixin, self).getint(section, option)
+        return super(ConfigHelperMixin, self).getint(section, option)
+
+    def getlist(self, section, option):
+        return self.get(section, option).split(",")
 
 
-class BuiltinConfigParser(IgnoreMissingMixin, ConfigParser.RawConfigParser, StringiferMixin):
-    def __init__(self, cs=True, fns=None, defaults=None):
-        ConfigParser.RawConfigParser.__init__(self, defaults=defaults)
-        if cs:
-            # Make option names case sensitive
-            # See: http://docs.python.org/library/configparser.html#ConfigParser.RawConfigParser.optionxform
-            self.optionxform = str
+class BuiltinConfigParser(ConfigHelperMixin, ConfigParser.RawConfigParser, StringiferMixin):
+    def __init__(self, fns=None, templatize_values=False):
+        ConfigHelperMixin.__init__(self, templatize_values)
+        ConfigParser.RawConfigParser.__init__(self)
+        StringiferMixin.__init__(self)
+        # Make option names case sensitive
+        # See: http://docs.python.org/library/configparser.html#ConfigParser.RawConfigParser.optionxform
+        self.optionxform = str
         if fns:
             for f in fns:
                 self.read(f)
 
 
-class RewritableConfigParser(IgnoreMissingMixin, iniparse.RawConfigParser, StringiferMixin):
-    def __init__(self, cs=True, fns=None, defaults=None):
-        iniparse.RawConfigParser.__init__(self, defaults=defaults)
-        if cs:
-            # Make option names case sensitive
-            # See: http://docs.python.org/library/configparser.html#ConfigParser.RawConfigParser.optionxform
-            self.optionxform = str
+class RewritableConfigParser(ConfigHelperMixin, iniparse.RawConfigParser, StringiferMixin):
+    def __init__(self, fns=None, templatize_values=False):
+        ConfigHelperMixin.__init__(self, templatize_values)
+        iniparse.RawConfigParser.__init__(self)
+        StringiferMixin.__init__(self)
+        # Make option names case sensitive
+        # See: http://docs.python.org/library/configparser.html#ConfigParser.RawConfigParser.optionxform
+        self.optionxform = str
         if fns:
             for f in fns:
                 self.read(f)
+
+
+class DefaultConf(object):
+    """This class represents the data/format of the config file with
+    a large DEFAULT section"""
+
+    current_section = "DEFAULT"
+
+    def __init__(self, backing, current_section=None):
+        self.backing = backing
+        self.current_section = current_section or self.current_section
+
+    def add_with_section(self, section, key, value, *values):
+        real_key = str(key)
+        real_value = ""
+        if len(values):
+            str_values = [str(value)] + [str(v) for v in values]
+            real_value = ",".join(str_values)
+        else:
+            real_value = str(value)
+        LOG.debug("Added conf key %r with value %r under section %r",
+                  real_key, real_value, section)
+        self.backing.set(section, real_key, real_value)
+
+    def add(self, key, value, *values):
+        self.add_with_section(self.current_section, key, value, *values)
+
+    def remove(self, section, key):
+        self.backing.remove_option(section, key)
 
 
 class YamlInterpolator(object):
@@ -113,6 +169,11 @@ class YamlInterpolator(object):
         self.included = {}
         self.interpolated = {}
         self.base = base
+        self.auto_specials = {
+            'ip': utils.get_host_ip,
+            'home': sh.gethomedir,
+            'hostname': sh.hostname,
+        }
 
     def _interpolate_iterable(self, what):
         if isinstance(what, (set)):
@@ -124,6 +185,8 @@ class YamlInterpolator(object):
             n_what = []
             for v in what:
                 n_what.append(self._interpolate(v))
+            if isinstance(what, (tuple)):
+                n_what = tuple(n_what)
             return n_what
 
     def _interpolate_dictionary(self, what):
@@ -134,8 +197,8 @@ class YamlInterpolator(object):
 
     def _include_dictionary(self, what):
         n_what = {}
-        for (k, v) in what.iteritems():
-            n_what[k] = self._do_include(v)
+        for (k, value) in what.iteritems():
+            n_what[k] = self._do_include(value)
         return n_what
 
     def _include_iterable(self, what):
@@ -148,27 +211,32 @@ class YamlInterpolator(object):
             n_what = []
             for v in what:
                 n_what.append(self._do_include(v))
+            if isinstance(what, (tuple)):
+                n_what = tuple(n_what)
             return n_what
 
-    def _interpolate(self, v):
-        n_v = v
-        if v and isinstance(v, (basestring, str)):
-            n_v = self._interpolate_string(v)
-        elif isinstance(v, dict):
-            n_v = self._interpolate_dictionary(v)
-        elif isinstance(v, (list, set, tuple)):
-            n_v = self._interpolate_iterable(v)
-        return n_v
-    
+    def _interpolate(self, value):
+        new_value = value
+        if value and isinstance(value, (basestring, str)):
+            new_value = self._interpolate_string(value)
+        elif isinstance(value, (dict)):
+            new_value = self._interpolate_dictionary(value)
+        elif isinstance(value, (list, set, tuple)):
+            new_value = self._interpolate_iterable(value)
+        return new_value
+
     def _interpolate_string(self, what):
         if not re.search(INTERP_PAT, what):
+            # Leave it alone if the sub won't do
+            # anything to begin with
             return what
 
         def replacer(match):
             who = match.group(1).strip()
             key = match.group(2).strip()
-            if self._process_special(who, key):
-                return self._process_special(who, key)
+            (is_special, special_value) = self._process_special(who, key)
+            if is_special:
+                return special_value
             if who not in self.interpolated:
                 self.interpolated[who] = self.included[who]
                 self.interpolated[who] = self._interpolate(self.included[who])
@@ -177,37 +245,42 @@ class YamlInterpolator(object):
         return re.sub(INTERP_PAT, replacer, what)
 
     def _process_special(self, who, key):
-        if key == 'ip' and who == 'auto':
-            return utils.get_host_ip()
-        if key == 'user' and who == 'auto':
-            return sh.getuser()
-        if who == 'auto':
-            raise KeyError("Unknown auto key type %s" % (key))
-        return None
+        if who and who.lower() in ['auto']:
+            if key not in self.auto_specials:
+                raise KeyError("Unknown auto key %r" % (key))
+            functor = self.auto_specials[key]
+            return (True, functor())
+        return (False, None)
 
     def _include_string(self, what):
         if not re.search(INTERP_PAT, what):
+            # Leave it alone if the sub won't do
+            # anything to begin with
             return what
 
         def replacer(match):
             who = match.group(1).strip()
             key = match.group(2).strip()
-            if self._process_special(who, key):
-                return self._process_special(who, key)
+            (is_special, special_value) = self._process_special(who, key)
+            if is_special:
+                return special_value
+            # Process there includes and then
+            # fetch the value that should have been
+            # populated
             self._process_includes(who)
             return str(self.included[who][key])
 
         return re.sub(INTERP_PAT, replacer, what)
 
-    def _do_include(self, v):
-        n_v = v
-        if v and isinstance(v, (basestring, str)):
-            n_v = self._include_string(v)
-        elif isinstance(v, dict):
-            n_v = self._include_dictionary(v)
-        elif isinstance(v, (list, set, tuple)):
-            n_v = self._include_iterable(v)
-        return n_v
+    def _do_include(self, value):
+        new_value = value
+        if value and isinstance(value, (basestring, str)):
+            new_value = self._include_string(value)
+        elif isinstance(value, (dict)):
+            new_value = self._include_dictionary(value)
+        elif isinstance(value, (list, set, tuple)):
+            new_value = self._include_iterable(value)
+        return new_value
 
     def _process_includes(self, root):
         if root in self.included:
@@ -226,3 +299,12 @@ class YamlInterpolator(object):
         self.interpolated[root] = self.included[root]
         self.interpolated[root] = self._interpolate(self.interpolated[root])
         return self.interpolated[root]
+
+
+def create_parser(cfg_cls, component, fns=None):
+    templatize_values = component.get_bool_option('template_config')
+    cfg_opts = {
+        'fns': fns,
+        'templatize_values': templatize_values,
+    }
+    return cfg_cls(**cfg_opts)

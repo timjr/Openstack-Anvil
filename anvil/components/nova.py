@@ -14,172 +14,91 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import io
-
-try:
-    from collections import OrderedDict
-except ImportError:
-    from ordereddict import OrderedDict
-
-from anvil import cfg
 from anvil import colorizer
-from anvil import components as comp
-from anvil import exceptions
+from anvil import exceptions as excp
 from anvil import log as logging
 from anvil import shell as sh
 from anvil import utils
 
-from anvil.components.helpers import db as dbhelper
-from anvil.components.helpers import keystone as khelper
+from anvil.components import base_install as binstall
+from anvil.components import base_runtime as bruntime
+
+from anvil.components.configurators import nova as nconf
 from anvil.components.helpers import nova as nhelper
-from anvil.components.helpers import rabbit as rhelper
 from anvil.components.helpers import virt as lv
 
 LOG = logging.getLogger(__name__)
-
-# Copies from helpers
-API_CONF = nhelper.API_CONF
-DB_NAME = nhelper.DB_NAME
-PASTE_CONF = nhelper.PASTE_CONF
-
-# Normal conf
-POLICY_CONF = 'policy.json'
-LOGGING_CONF = "logging.conf"
-CONFIGS = [PASTE_CONF, POLICY_CONF, LOGGING_CONF, API_CONF]
-ADJUST_CONFIGS = [PASTE_CONF]
 
 # This is a special marker file that when it exists, signifies that nova net was inited
 NET_INITED_FN = 'nova.network.inited.yaml'
 
 # This makes the database be in sync with nova
 DB_SYNC_CMD = [
-    {'cmd': ['$BIN_DIR/nova-manage', '--config-file', '$CFG_FILE', 'db', 'sync'], 'run_as_root': True},
+    {'cmd': ['sudo', '-u', 'nova', '/usr/bin/nova-manage', 'db', 'sync']},
 ]
 
 # Used to create a fixed network when initializating nova
 FIXED_NET_CMDS = [
     {
-        'cmd': ['$BIN_DIR/nova-manage', '--config-file', '$CFG_FILE',
+        'cmd': ['sudo', '-u', 'nova', '/usr/bin/nova-manage',
                 'network', 'create', 'private', '$FIXED_RANGE', '1', '$FIXED_NETWORK_SIZE'],
-        'run_as_root': True,
     },
 ]
 
 # Used to create a floating network + test floating pool
 FLOATING_NET_CMDS = [
     {
-        'cmd': ['$BIN_DIR/nova-manage', '--config-file', '$CFG_FILE', 'floating', 'create', '$FLOATING_RANGE'],
-        'run_as_root': True,
+        'cmd': ['sudo', '-u', 'nova', '/usr/bin/nova-manage',
+                'floating', 'create', '$FLOATING_RANGE'],
     },
     {
-        'cmd': ['$BIN_DIR/nova-manage', '--config-file', '$CFG_FILE',
+        'cmd': ['sudo', '-u', 'nova', '/usr/bin/nova-manage',
                 'floating', 'create', '--ip_range=$TEST_FLOATING_RANGE', '--pool=$TEST_FLOATING_POOL'],
-        'run_as_root': True,
     },
 ]
 
-# NCPU, NVOL, NAPI ... are here as possible subsystems of nova
-NCPU = "cpu"
-NVOL = "vol"
-NAPI = "api"
-NOBJ = "obj"
-NNET = "net"
-NCERT = "cert"
-NSCHED = "sched"
-NCAUTH = "cauth"
-NXVNC = "xvnc"
-NNOVNC = 'novnc'
-SUBSYSTEMS = [NCPU, NVOL, NAPI,
-              NOBJ, NNET, NCERT,
-              NSCHED, NCAUTH, NXVNC,
-              NNOVNC]
 
-# What to start
-APP_OPTIONS = {
-    #these are currently the core components/applications
-    'nova-api': ['--config-file', '$CFG_FILE'],
-    'nova-compute': ['--config-file', '$CFG_FILE'],
-    'nova-volume': ['--config-file', '$CFG_FILE'],
-    'nova-network': ['--config-file', '$CFG_FILE'],
-    'nova-scheduler': ['--config-file', '$CFG_FILE'],
-    'nova-cert': ['--config-file', '$CFG_FILE'],
-    'nova-objectstore': ['--config-file', '$CFG_FILE'],
-    'nova-consoleauth': ['--config-file', '$CFG_FILE'],
-    'nova-xvpvncproxy': ['--config-file', '$CFG_FILE'],
-}
-
-# Sub component names to actual app names (matching previous dict)
-SUB_COMPONENT_NAME_MAP = {
-    NCPU: 'nova-compute',
-    NVOL: 'nova-volume',
-    NAPI: 'nova-api',
-    NOBJ: 'nova-objectstore',
-    NNET: 'nova-network',
-    NCERT: 'nova-cert',
-    NSCHED: 'nova-scheduler',
-    NCAUTH: 'nova-consoleauth',
-    NXVNC: 'nova-xvpvncproxy',
-}
-
-# Subdirs of the checkout/download
-BIN_DIR = 'bin'
-
-# This is a special conf
-CLEANER_DATA_CONF = 'nova-clean.sh'
-
-
-class NovaUninstaller(comp.PythonUninstallComponent):
+class NovaUninstaller(binstall.PkgUninstallComponent):
     def __init__(self, *args, **kargs):
-        comp.PythonUninstallComponent.__init__(self, *args, **kargs)
+        binstall.PkgUninstallComponent.__init__(self, *args, **kargs)
         self.virsh = lv.Virsh(self.get_int_option('service_wait_seconds'), self.distro)
+        self.net_init_fn = sh.joinpths(self.get_option('trace_dir'), NET_INITED_FN)
 
     def pre_uninstall(self):
-        self._clear_libvirt_domains()
-        self._clean_it()
+        if 'compute' in self.subsystems:
+            self._clean_compute()
+        if 'network' in self.subsystems:
+            self._clean_net()
 
-    def _filter_subsystems(self):
-        subs = set()
-        for (name, _values) in self.subsystems.items():
-            if name in SUB_COMPONENT_NAME_MAP:
-                subs.add(name)
-        return subs
+    def unconfigure(self):
+        if sh.isfile(self.net_init_fn):
+            sh.unlink(self.net_init_fn)
 
-    def _clean_it(self):
-        cleaner_fn = sh.joinpths(self.get_option('app_dir'), BIN_DIR, CLEANER_DATA_CONF)
-        if sh.isfile(cleaner_fn):
-            LOG.info("Cleaning up your system by running nova cleaner script: %s", colorizer.quote(cleaner_fn))
-            # These environment additions are important
-            # in that they eventually affect how this script runs
-            env = {
-                'ENABLED_SERVICES': ",".join(self._filter_subsystems()),
-            }
-            sh.execute(cleaner_fn, run_as_root=True, env_overrides=env)
+    def _clean_net(self):
+        try:
+            LOG.info("Cleaning up nova-network's dirty laundry.")
+            cleaner = nhelper.NetworkCleaner(self)
+            cleaner.clean()
+        except Exception as e:
+            LOG.warn("Failed cleaning up nova-network's dirty laundry due to: %s", e)
 
-    def _clear_libvirt_domains(self):
-        virt_driver = nhelper.canon_virt_driver(self.get_option('virt_driver'))
-        if virt_driver == 'libvirt':
-            inst_prefix = self.get_option('instance_name_prefix', 'instance-')
-            libvirt_type = lv.canon_libvirt_type(self.get_option('libvirt_type'))
-            self.virsh.clear_domains(libvirt_type, inst_prefix)
+    def _clean_compute(self):
+        try:
+            LOG.info("Cleaning up nova-compute's dirty laundry.")
+            cleaner = nhelper.ComputeCleaner(self)
+            cleaner.clean()
+        except Exception as e:
+            LOG.warn("Failed cleaning up nova-compute's dirty laundry due to: %s", e)
 
 
-class NovaInstaller(comp.PythonInstallComponent):
+class NovaInstaller(binstall.PythonInstallComponent):
     def __init__(self, *args, **kargs):
-        comp.PythonInstallComponent.__init__(self, *args, **kargs)
-        self.conf_maker = nhelper.ConfConfigurator(self)
-
-    @property
-    def config_files(self):
-        return list(CONFIGS)
-
-    def _filter_pip_requires_line(self, line):
-        if utils.has_any(line.lower(), 'quantumclient', 'glance'):
-            return None
-        return line
+        binstall.PythonInstallComponent.__init__(self, *args, **kargs)
+        self.configurator = nconf.NovaConfigurator(self)
 
     @property
     def env_exports(self):
-        to_set = OrderedDict()
+        to_set = utils.OrderedDict()
         to_set['OS_COMPUTE_API_VERSION'] = self.get_option('nova_version')
         n_params = nhelper.get_shared_params(**self.options)
         for (endpoint, details) in n_params['endpoints'].items():
@@ -187,142 +106,49 @@ class NovaInstaller(comp.PythonInstallComponent):
         return to_set
 
     def verify(self):
-        comp.PythonInstallComponent.verify(self)
-        self.conf_maker.verify()
-
-    def warm_configs(self):
-        mq_type = nhelper.canon_mq_type(self.get_option('mq-type'))
-        if mq_type == 'rabbit':
-            rhelper.get_shared_passwords(self)
+        binstall.PythonInstallComponent.verify(self)
+        self.configurator.verify()
 
     def _sync_db(self):
-        LOG.info("Syncing nova to database named: %s", colorizer.quote(DB_NAME))
+        LOG.info("Syncing nova to database named: %s", colorizer.quote(self.configurator.DB_NAME))
         utils.execute_template(*DB_SYNC_CMD, params=self.config_params(None))
 
+    def _fix_virt(self):
+        virt_driver = utils.canon_virt_driver(self.get_option('virt_driver'))
+        if virt_driver == 'libvirt':
+            virt_type = lv.canon_libvirt_type(self.get_option('libvirt_type'))
+            if virt_type == 'qemu':
+                # On RHEL it appears a sym-link needs to be created
+                # to enable qemu to actually work, apparently fixed
+                # in RHEL 6.4.
+                #
+                # See: http://fedoraproject.org/wiki/Getting_started_with_OpenStack_EPEL
+                if not sh.isfile('/usr/bin/qemu-system-x86_64'):
+                    sh.symlink('/usr/libexec/qemu-kvm', '/usr/bin/qemu-system-x86_64',
+                               tracewriter=self.tracewriter)
+
     def post_install(self):
-        comp.PythonInstallComponent.post_install(self)
+        binstall.PythonInstallComponent.post_install(self)
         # Extra actions to do nova setup
         if self.get_bool_option('db-sync'):
-            self._setup_db()
+            self.configurator.setup_db()
             self._sync_db()
-        self._setup_cleaner()
-
-    def _setup_cleaner(self):
-        LOG.info("Configuring cleaner template: %s", colorizer.quote(CLEANER_DATA_CONF))
-        (_fn, contents) = utils.load_template(self.name, CLEANER_DATA_CONF)
-        # FIXME(harlowja), stop placing in checkout dir...
-        cleaner_fn = sh.joinpths(sh.joinpths(self.get_option('app_dir'), BIN_DIR), CLEANER_DATA_CONF)
-        sh.write_file(cleaner_fn, contents)
-        sh.chmod(cleaner_fn, 0755)
-        self.tracewriter.file_touched(cleaner_fn)
-
-    def _setup_db(self):
-        dbhelper.drop_db(distro=self.distro,
-                         dbtype=self.get_option('db', 'type'),
-                         dbname=DB_NAME,
-                         **utils.merge_dicts(self.get_option('db'),
-                                             dbhelper.get_shared_passwords(self)))
-        # Explicitly use latin1: to avoid lp#829209, nova expects the database to
-        # use latin1 by default, and then upgrades the database to utf8 (see the
-        # 082_essex.py in nova)
-        dbhelper.create_db(distro=self.distro,
-                           dbtype=self.get_option('db', 'type'),
-                           dbname=DB_NAME,
-                           charset='latin1',
-                           **utils.merge_dicts(self.get_option('db'),
-                                               dbhelper.get_shared_passwords(self)))
-
-    def _generate_nova_conf(self, fn):
-        LOG.debug("Generating dynamic content for nova: %s.", (fn))
-        return self.conf_maker.generate(fn)
-
-    def source_config(self, config_fn):
-        if config_fn == PASTE_CONF:
-            config_fn = 'api-paste.ini'
-        elif config_fn == LOGGING_CONF:
-            config_fn = 'logging_sample.conf'
-        elif config_fn == API_CONF:
-            config_fn = 'nova.conf.sample'
-        fn = sh.joinpths(self.get_option('app_dir'), 'etc', "nova", config_fn)
-        return (fn, sh.load_file(fn))
-
-    def _config_adjust_paste(self, contents, fn):
-        params = khelper.get_shared_params(ip=self.get_option('ip'),
-                                           service_user='nova',
-                                           **utils.merge_dicts(self.get_option('keystone'), 
-                                                               khelper.get_shared_passwords(self)))
-        
-        with io.BytesIO(contents) as stream:
-            config = cfg.RewritableConfigParser()
-            config.readfp(stream)
-
-            config.set('filter:authtoken', 'auth_host', params['endpoints']['admin']['host'])
-            config.set('filter:authtoken', 'auth_port', params['endpoints']['admin']['port'])
-            config.set('filter:authtoken', 'auth_protocol', params['endpoints']['admin']['protocol'])
-
-            config.set('filter:authtoken', 'service_host', params['endpoints']['internal']['host'])
-            config.set('filter:authtoken', 'service_port', params['endpoints']['internal']['port'])
-            config.set('filter:authtoken', 'service_protocol', params['endpoints']['internal']['protocol'])
-
-            config.set('filter:authtoken', 'admin_tenant_name', params['service_tenant'])
-            config.set('filter:authtoken', 'admin_user', params['service_user'])
-            config.set('filter:authtoken', 'admin_password', params['service_password'])
-
-            contents = config.stringify(fn)
-        return contents
-
-    def _config_adjust_logging(self, contents, fn):
-        with io.BytesIO(contents) as stream:
-            config = cfg.RewritableConfigParser()
-            config.readfp(stream)
-            config.set('logger_root', 'level', 'DEBUG')
-            config.set('logger_root', 'handlers', "stdout")
-            contents = config.stringify(fn)
-        return contents
-
-    def _config_adjust(self, contents, name):
-        if name == PASTE_CONF:
-            return self._config_adjust_paste(contents, name)
-        elif name == LOGGING_CONF:
-            return self._config_adjust_logging(contents, name)
-        elif name == API_CONF:
-            return self._generate_nova_conf(name)
-        else:
-            return contents
-
-    def _config_param_replace(self, config_fn, contents, parameters):
-        if config_fn in [PASTE_CONF, LOGGING_CONF, API_CONF]:
-            # We handle these ourselves
-            return contents
-        else:
-            return comp.PythonInstallComponent._config_param_replace(self, config_fn, contents, parameters)
-
-    def config_params(self, config_fn):
-        mp = comp.PythonInstallComponent.config_params(self, config_fn)
-        mp['CFG_FILE'] = sh.joinpths(self.get_option('cfg_dir'), API_CONF)
-        mp['BIN_DIR'] = sh.joinpths(self.get_option('app_dir'), BIN_DIR)
-        return mp
+        # Patch up your virtualization system
+        self._fix_virt()
 
 
-class NovaRuntime(comp.PythonRuntime):
+class NovaRuntime(bruntime.OpenStackRuntime):
     def __init__(self, *args, **kargs):
-        comp.PythonRuntime.__init__(self, *args, **kargs)
+        bruntime.OpenStackRuntime.__init__(self, *args, **kargs)
         self.wait_time = self.get_int_option('service_wait_seconds')
         self.virsh = lv.Virsh(self.wait_time, self.distro)
-        self.config_path = sh.joinpths(self.get_option('cfg_dir'), API_CONF)
-        self.bin_dir = sh.joinpths(self.get_option('app_dir'), BIN_DIR)
         self.net_init_fn = sh.joinpths(self.get_option('trace_dir'), NET_INITED_FN)
 
     def _do_network_init(self):
-        ran_fn = self.net_init_fn
-        if not sh.isfile(ran_fn) and self.get_bool_option('do-network-init'):
+        if not sh.isfile(self.net_init_fn) and self.get_bool_option('do-network-init'):
             # Figure out the commands to run
             cmds = []
-            mp = {
-                'CFG_FILE': self.config_path,
-                'BIN_DIR': self.bin_dir
-            }
-            mp['BIN_DIR'] = self.bin_dir
+            mp = {}
             if self.get_bool_option('enable_fixed'):
                 # Create a fixed network
                 mp['FIXED_NETWORK_SIZE'] = self.get_option('fixed_network_size', default_value='256')
@@ -343,27 +169,16 @@ class NovaRuntime(comp.PythonRuntime):
                 'cmds': cmds,
                 'replacements': mp,
             }
-            sh.write_file(ran_fn, utils.prettify_yaml(cmd_mp))
-            LOG.info("If you wish to re-run network initialization, delete %s", colorizer.quote(ran_fn))
+            sh.write_file(self.net_init_fn, utils.prettify_yaml(cmd_mp))
+            LOG.info("If you wish to re-run network initialization, delete %s", colorizer.quote(self.net_init_fn))
 
     def post_start(self):
         self._do_network_init()
 
-    @property
-    def apps_to_start(self):
-        apps = []
-        for (name, _values) in self.subsystems.items():
-            if name in SUB_COMPONENT_NAME_MAP:
-                apps.append({
-                    'name': SUB_COMPONENT_NAME_MAP[name],
-                    'path': sh.joinpths(self.get_option('app_dir'), BIN_DIR, SUB_COMPONENT_NAME_MAP[name]),
-                })
-        return apps
-
     def pre_start(self):
         # Let the parent class do its thing
-        comp.PythonRuntime.pre_start(self)
-        virt_driver = nhelper.canon_virt_driver(self.get_option('virt_driver'))
+        bruntime.OpenStackRuntime.pre_start(self)
+        virt_driver = utils.canon_virt_driver(self.get_option('virt_driver'))
         if virt_driver == 'libvirt':
             virt_type = lv.canon_libvirt_type(self.get_option('libvirt_type'))
             LOG.info("Checking that your selected libvirt virtualization type %s is working and running.", colorizer.quote(virt_type))
@@ -371,24 +186,8 @@ class NovaRuntime(comp.PythonRuntime):
                 self.virsh.check_virt(virt_type)
                 self.virsh.restart_service()
                 LOG.info("Libvirt virtualization type %s seems to be working and running.", colorizer.quote(virt_type))
-            except exceptions.ProcessExecutionError as e:
+            except excp.ProcessExecutionError as e:
                 msg = ("Libvirt type %r does not seem to be active or configured correctly, "
                         "perhaps you should be using %r instead: %s" %
                         (virt_type, lv.DEF_VIRT_TYPE, e))
-                raise exceptions.StartException(msg)
-
-    def app_params(self, app_name):
-        params = comp.PythonRuntime.app_params(self, app_name)
-        params['CFG_FILE'] = self.config_path
-        return params
-
-    def app_options(self, app):
-        return APP_OPTIONS.get(app)
-
-
-class NovaTester(comp.PythonTestingComponent):
-    def _get_test_exclusions(self):
-        return [
-            # Disable since quantumclient is not always installed.
-            'test_quantumv2',
-        ]
+                raise excp.StartException(msg)

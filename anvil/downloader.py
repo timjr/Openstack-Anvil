@@ -14,28 +14,29 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import abc
 import contextlib
 import functools
 import urllib2
-
-from urlparse import (urlparse, parse_qs)
+import urlparse
 
 import progressbar
 
 from anvil import colorizer
-from anvil import exceptions as excp
 from anvil import log as logging
 from anvil import shell as sh
-from anvil import utils
 
 LOG = logging.getLogger(__name__)
 
 
 class Downloader(object):
+    __metaclass__ = abc.ABCMeta
+
     def __init__(self, uri, store_where):
         self.uri = uri
         self.store_where = store_where
 
+    @abc.abstractmethod
     def download(self):
         raise NotImplementedError()
 
@@ -53,7 +54,7 @@ class GitDownloader(Downloader):
             # If we use urlparser here it doesn't seem to work right??
             # TODO(harlowja), why??
             (uri, params) = uri.split("?", 1)
-            params = parse_qs(params)
+            params = urlparse.parse_qs(params)
             if 'branch' in params:
                 branch = params['branch'][0].strip()
             if 'tag' in params:
@@ -61,30 +62,59 @@ class GitDownloader(Downloader):
             uri = uri.strip()
         if not branch:
             branch = 'master'
+        if tag:
+            # Avoid 'detached HEAD state' message by moving to a
+            # $tag-anvil branch for that tag
+            new_branch = "%s-%s" % (tag, 'anvil')
+            checkout_what = [tag, '-b', new_branch]
+        else:
+            # Set it up to track the remote branch correctly
+            new_branch = branch
+            checkout_what = ['-t', '-b', new_branch, 'origin/%s' % branch]
         if sh.isdir(self.store_where) and sh.isdir(sh.joinpths(self.store_where, '.git')):
             LOG.info("Existing git directory located at %s, leaving it alone.", colorizer.quote(self.store_where))
+            # do git clean -xdfq and git reset --hard to undo possible changes
+            cmd = ["git", "clean", "-xdfq"]
+            sh.execute(cmd, cwd=self.store_where)
+            cmd = ["git", "reset", "--hard"]
+            sh.execute(cmd, cwd=self.store_where)
+            cmd = ["git", "fetch", "origin"]
+            sh.execute(cmd, cwd=self.store_where)
         else:
             LOG.info("Downloading %s (%s) to %s.", colorizer.quote(uri), branch, colorizer.quote(self.store_where))
-            cmd = list(self.distro.get_command('git', 'clone'))
-            cmd += [uri, self.store_where]
-            sh.execute(*cmd)
-        if branch or tag:
-            checkout_what = []
-            if tag:
-                # Avoid 'detached HEAD state' message by moving to a 
-                # $tag-anvil branch for that tag
-                checkout_what = [tag, '-b', "%s-%s" % (tag, 'anvil')]
-                LOG.info("Adjusting to tag %s.", colorizer.quote(tag))
-            else:
-                if branch.lower() == 'master':
-                    checkout_what = ['master']
-                else:
-                    # Set it up to track the remote branch correctly
-                    checkout_what = ['--track', '-b', branch, 'origin/%s' % (branch)]
-                LOG.info("Adjusting branch to %s.", colorizer.quote(branch))
-            cmd = list(self.distro.get_command('git', 'checkout'))
-            cmd += checkout_what
-            sh.execute(*cmd, cwd=self.store_where)
+            cmd = ["git", "clone", uri, self.store_where]
+            sh.execute(cmd)
+        if tag:
+            LOG.info("Adjusting to tag %s.", colorizer.quote(tag))
+        else:
+            LOG.info("Adjusting branch to %s.", colorizer.quote(branch))
+        # NOTE(aababilov): old openstack.common.setup reports all tag that
+        # contain HEAD as project's version. It breaks all RPM building
+        # process, so, we will delete all extra tags
+        cmd = ["git", "tag", "--contains", "HEAD"]
+        tag_names = [
+            i
+            for i in sh.execute(cmd, cwd=self.store_where)[0].splitlines()
+            if i and i != tag]
+        if not tag:
+            # when checking out to a branch, delete all
+            # the tags except the oldest
+            tag_names = tag_names[1:]
+        if tag_names:
+            LOG.info("Removing tags: %s", colorizer.quote(" ".join(tag_names)))
+            cmd = ["git", "tag", "-d"] + tag_names
+            sh.execute(cmd, cwd=self.store_where)
+        # detach, drop new_branch if it exists, and checkout to new_branch
+        # newer git allows branch resetting: git checkout -B $new_branch
+        # so, all these are for compatibility with older RHEL git
+        cmd = ["git", "rev-parse", "HEAD"]
+        git_head = sh.execute(cmd, cwd=self.store_where)[0].strip()
+        cmd = ["git", "checkout", git_head]
+        sh.execute(cmd, cwd=self.store_where)
+        cmd = ["git", "branch", "-D", new_branch]
+        sh.execute(cmd, cwd=self.store_where, check_exit_code=False)
+        cmd = ["git", "checkout"] + checkout_what
+        sh.execute(cmd, cwd=self.store_where)
 
 
 class UrlLibDownloader(Downloader):
@@ -121,39 +151,7 @@ class UrlLibDownloader(Downloader):
                         pass
                 with open(self.store_where, 'wb') as ofh:
                     return (self.store_where, sh.pipe_in_out(conn, ofh,
-                                            chunk_cb=functools.partial(update_bar, p_bar)))
+                                                             chunk_cb=functools.partial(update_bar, p_bar)))
         finally:
             if p_bar:
                 p_bar.finish()
-
-
-def download(distro, uri, target_dir, **kwargs):
-    puri = urlparse(uri)
-    scheme = puri.scheme.lower()
-    path = puri.path
-    if scheme in ['git'] or path.find('.git') != -1:
-        dirs_made = sh.mkdirslist(target_dir)
-        downloader = GitDownloader(distro, uri, target_dir)
-        downloader.download()
-        return dirs_made
-    if scheme in ['http', 'https']:
-        dirs_made = []
-        with utils.tempdir() as tdir:
-            fn = sh.basename(path)
-            downloader = UrlLibDownloader(uri, sh.joinpths(tdir, fn))
-            downloader.download()
-            if fn.endswith('.tar.gz'):
-                dirs_made = sh.mkdirslist(target_dir)
-                cmd = ['tar', '-xzvf', sh.joinpths(tdir, fn), '-C', target_dir]
-                sh.execute(*cmd)
-            elif fn.endswith('.zip'):
-                # TODO(harlowja) this might not be 100% right...
-                # we might have to move the finished directory...
-                dirs_made = sh.mkdirslist(target_dir)
-                cmd = ['unzip', sh.joinpths(tdir, fn), '-d', target_dir]
-                sh.execute(*cmd)
-            else:
-                raise excp.DownloadException("Unable to extract %s downloaded from %s" % (fn, uri))
-        return dirs_made
-    else:
-        raise excp.DownloadException("Unknown scheme %s, unable to download from %s" % (scheme, uri))

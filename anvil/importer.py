@@ -18,35 +18,43 @@
 import sys
 
 from anvil import log as logging
+from anvil import utils
 
 LOG = logging.getLogger(__name__)
 
 
 def construct_entry_point(fullname, *args, **kwargs):
     cls = import_entry_point(fullname)
+    LOG.debug("Constructing %r (%s)", fullname, cls)
+    if kwargs:
+        LOG.debug("Kwargs are:")
+        utils.log_object(kwargs, logger=LOG, level=logging.DEBUG)
+    if args:
+        LOG.debug("Args are:")
+        utils.log_object(args, logger=LOG, level=logging.DEBUG)
     return cls(*args, **kwargs)
 
 
 def partition(fullname):
-    """
-    The name should be in dotted.path:ClassName syntax.
-    """
+    """The name should be in dotted.path:ClassName syntax."""
     if ':' not in fullname:
         raise ValueError('Invalid entry point specifier %r' % fullname)
-    (module_name, _, classname) = fullname.partition(':')
+    (module_name, _sep, classname) = fullname.partition(':')
     return (module_name, classname)
 
 
 def import_entry_point(fullname):
-    """
-    Given a name import the class and return it.
-    """
+    """Given a name import the class and return it."""
     (module_name, classname) = partition(fullname)
     try:
+        import_module(module_name)
+        # This is done to ensure we get the right submodule
         module = __import__(module_name)
         for submodule in module_name.split('.')[1:]:
             module = getattr(module, submodule)
+        LOG.debug("Importing class: %s", classname)
         cls = getattr(module, classname)
+        # TODO(harlowja) actually verify this is a class??
     except (ImportError, AttributeError, ValueError) as err:
         raise RuntimeError('Could not load entry point %s: %s' %
                            (fullname, err))
@@ -55,9 +63,9 @@ def import_entry_point(fullname):
 
 def import_module(module_name):
     try:
-        __import__(module_name)
         LOG.debug("Importing module: %s", module_name)
+        __import__(module_name)
         return sys.modules.get(module_name, None)
-    except ImportError as err:
+    except (ImportError, ValueError) as err:
         raise RuntimeError('Could not load module %s: %s' %
                            (module_name, err))

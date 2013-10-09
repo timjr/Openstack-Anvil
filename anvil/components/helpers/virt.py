@@ -59,7 +59,7 @@ class Virsh(object):
 
     def _service_status(self):
         cmd = self.distro.get_command('libvirt', 'status')
-        (stdout, stderr) = sh.execute(*cmd, run_as_root=True, check_exit_code=False)
+        (stdout, stderr) = sh.execute(cmd, check_exit_code=False)
         combined = (stdout + stderr)
         if combined.lower().find("running") != -1 or combined.lower().find('start') != -1:
             return (_ALIVE, combined)
@@ -69,15 +69,16 @@ class Virsh(object):
     def _destroy_domain(self, libvirt, conn, dom_name):
         try:
             dom = conn.lookupByName(dom_name)
-            LOG.debug("Destroying domain (%r) (id=%s) running %r" % (dom_name, dom.ID(), dom.OSType()))
-            dom.destroy()
-            dom.undefine()
+            if dom:
+                LOG.debug("Destroying domain (%r) (id=%s) running %r" % (dom_name, dom.ID(), dom.OSType()))
+                dom.destroy()
+                dom.undefine()
         except libvirt.libvirtError as e:
             LOG.warn("Could not clear out libvirt domain %s due to: %s", colorizer.quote(dom_name), e)
 
     def restart_service(self):
         cmd = self.distro.get_command('libvirt', 'restart')
-        sh.execute(*cmd, run_as_root=True)
+        sh.execute(cmd)
 
     def wait_active(self):
         # TODO(harlowja) fix this by using the component wait active...
@@ -98,7 +99,6 @@ class Virsh(object):
         self.wait_active()
         cmds = [{
             'cmd': self.distro.get_command('libvirt', 'verify'),
-            'run_as_root': True,
         }]
         mp = {
             'VIRT_PROTOCOL': virt_protocol,
@@ -109,6 +109,9 @@ class Virsh(object):
     def clear_domains(self, virt_type, inst_prefix):
         libvirt = None
         try:
+            # A late import is done since this code could be used before libvirt is actually
+            # installed, and that will cause the top level python import to fail which will
+            # make anvil not work, so import it dynamically to bypass the previous mechanism
             libvirt = importer.import_module('libvirt')
         except RuntimeError as e:
             pass
@@ -119,30 +122,29 @@ class Virsh(object):
         if not virt_protocol:
             LOG.warn("Could not clear out libvirt domains, no known protocol for virt type: %s", colorizer.quote(virt_type))
             return
-        with sh.Rooted(True):
-            LOG.info("Attempting to clear out leftover libvirt domains using protocol: %s", colorizer.quote(virt_protocol))
+        LOG.info("Attempting to clear out leftover libvirt domains using protocol: %s", colorizer.quote(virt_protocol))
+        try:
+            self.restart_service()
+            self.wait_active()
+        except (excp.StartException, IOError) as e:
+            LOG.warn("Could not restart the libvirt daemon due to: %s", e)
+            return
+        try:
+            conn = libvirt.open(virt_protocol)
+        except libvirt.libvirtError as e:
+            LOG.warn("Could not connect to libvirt using protocol %s due to: %s", colorizer.quote(virt_protocol), e)
+            return
+        with contextlib.closing(conn) as ch:
             try:
-                self.restart_service()
-                self.wait_active()
-            except (excp.StartException, IOError) as e:
-                LOG.warn("Could not restart the libvirt daemon due to: %s", e)
-                return
-            try:
-                conn = libvirt.open(virt_protocol)
-            except libvirt.libvirtError as e:
-                LOG.warn("Could not connect to libvirt using protocol %s due to: %s", colorizer.quote(virt_protocol), e)
-                return
-            with contextlib.closing(conn) as ch:
-                try:
-                    defined_domains = ch.listDefinedDomains()
-                    kill_domains = list()
-                    for domain in defined_domains:
-                        if domain.startswith(inst_prefix):
-                            kill_domains.append(domain)
-                    if kill_domains:
-                        utils.log_iterable(kill_domains, logger=LOG,
-                            header="Found %s old domains to destroy" % (len(kill_domains)))
-                        for domain in sorted(kill_domains):
-                            self._destroy_domain(libvirt, ch, domain)
-                except libvirt.libvirtError, e:
-                    LOG.warn("Could not clear out libvirt domains due to: %s", e)
+                defined_domains = ch.listDefinedDomains()
+                kill_domains = list()
+                for domain in defined_domains:
+                    if domain.startswith(inst_prefix):
+                        kill_domains.append(domain)
+                if kill_domains:
+                    utils.log_iterable(kill_domains, logger=LOG,
+                        header="Found %s old domains to destroy" % (len(kill_domains)))
+                    for domain in sorted(kill_domains):
+                        self._destroy_domain(libvirt, ch, domain)
+            except libvirt.libvirtError, e:
+                LOG.warn("Could not clear out libvirt domains due to: %s", e)

@@ -1,8 +1,8 @@
 .. _bugs-hugs-code:
 
-===============
+==================
 Bugs & Hugs & Code
-===============
+==================
 
 Community
 =========
@@ -24,24 +24,29 @@ Source code
 
 The source code is on github located at:
 
-https://github.com/yahoo/Openstack-Anvil
+https://github.com/stackforge/anvil/
 
-Feel free to fork it and contribute to it. You can also get a tarball or zip archive of the code.
+Feel free to fork it and contribute to it.
 
-Tags
+Bugs
 ----
 
-Stable *tags* can also be downloaded:
+https://bugs.launchpad.net/anvil
 
-https://github.com/yahoo/Openstack-Anvil/tags
+Branches
+--------
+
+Stable *branches* can also be downloaded:
+
+https://github.com/stackforge/anvil/branches
 
 
 Hacking
-=============
+=======
 
-Feel free to hack but please try to follow the `hacking guidelines`_
+Feel free to hack but please try to follow the `hacking guidelines`_.
 
 
-.. _apache version 2.0 license: https://github.com/yahoo/Openstack-Anvil/blob/master/LICENSE
+.. _apache version 2.0 license: https://github.com/stackforge/anvil/blob/master/LICENSE
 .. _launchpad’s issue tracking system: http://launchpad.net/anvil
-.. _hacking guidelines: https://github.com/yahoo/Openstack-Anvil/blob/master/HACKING.md
+.. _hacking guidelines: https://github.com/stackforge/anvil/blob/master/HACKING.md

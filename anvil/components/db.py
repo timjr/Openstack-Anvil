@@ -15,11 +15,11 @@
 #    under the License.
 
 from anvil import colorizer
-from anvil import components as comp
-from anvil import exceptions as excp
 from anvil import log as logging
-from anvil import shell as sh
 from anvil import utils
+
+from anvil.components import base_install as binstall
+from anvil.components import base_runtime as bruntime
 
 from anvil.components.helpers import db as dbhelper
 
@@ -35,10 +35,10 @@ RESET_BASE_PW = ''
 BASE_ERROR = dbhelper.BASE_ERROR
 
 
-class DBUninstaller(comp.PkgUninstallComponent):
+class DBUninstaller(binstall.PkgUninstallComponent):
 
     def __init__(self, *args, **kargs):
-        comp.PkgUninstallComponent.__init__(self, *args, **kargs)
+        binstall.PkgUninstallComponent.__init__(self, *args, **kargs)
         self.runtime = self.siblings.get('running')
 
     def warm_configs(self):
@@ -68,17 +68,17 @@ class DBUninstaller(comp.PkgUninstallComponent):
                       "reset the password to %s before the next install"), colorizer.quote(RESET_BASE_PW))
 
 
-class DBInstaller(comp.PkgInstallComponent):
+class DBInstaller(binstall.PkgInstallComponent):
     __meta__ = abc.ABCMeta
 
     def __init__(self, *args, **kargs):
-        comp.PkgInstallComponent.__init__(self, *args, **kargs)
+        binstall.PkgInstallComponent.__init__(self, *args, **kargs)
         self.runtime = self.siblings.get('running')
 
     def config_params(self, config_fn):
         # This dictionary will be used for parameter replacement
         # In pre-install and post-install sections
-        mp = comp.PkgInstallComponent.config_params(self, config_fn)
+        mp = binstall.PkgInstallComponent.config_params(self, config_fn)
         mp.update({
             'PASSWORD': dbhelper.get_shared_passwords(self)['pw'],
             'BOOT_START': "true",
@@ -96,7 +96,7 @@ class DBInstaller(comp.PkgInstallComponent):
         pass
 
     def post_install(self):
-        comp.PkgInstallComponent.post_install(self)
+        binstall.PkgInstallComponent.post_install(self)
 
         # Fix up the db configs
         self._configure_db_confs()
@@ -134,55 +134,7 @@ class DBInstaller(comp.PkgInstallComponent):
                                    **dbhelper.get_shared_passwords(self))
 
 
-class DBRuntime(comp.ProgramRuntime):
-    def __init__(self, *args, **kargs):
-        comp.ProgramRuntime.__init__(self, *args, **kargs)
-
-    def _get_run_actions(self, act, exception_cls):
-        db_type = self.get_option("type")
-        distro_options = self.distro.get_command_config(db_type)
-        if distro_options is None:
-            raise NotImplementedError(BASE_ERROR % (act, db_type))
-        return self.distro.get_command(db_type, act)
-
+class DBRuntime(bruntime.ServiceRuntime):
     @property
-    def apps_to_start(self):
-        db_type = self.get_option("type")
-        return [db_type]
-
-    def start(self):
-        if self.status()[0].status != comp.STATUS_STARTED:
-            start_cmd = self._get_run_actions('start', excp.StartException)
-            sh.execute(*start_cmd, run_as_root=True, check_exit_code=True)
-            return 1
-        else:
-            return 0
-
-    def stop(self):
-        if self.status()[0].status != comp.STATUS_STOPPED:
-            stop_cmd = self._get_run_actions('stop', excp.StopException)
-            sh.execute(*stop_cmd, run_as_root=True, check_exit_code=True)
-            return 1
-        else:
-            return 0
-
-    def restart(self):
-        LOG.info("Restarting your database.")
-        restart_cmd = self._get_run_actions('restart', excp.RestartException)
-        sh.execute(*restart_cmd, run_as_root=True, check_exit_code=True)
-        return 1
-
-    def status(self):
-        status_cmd = self._get_run_actions('status', excp.StatusException)
-        (sysout, stderr) = sh.execute(*status_cmd, run_as_root=True, check_exit_code=False)
-        combined = (sysout + stderr).lower()
-        st = comp.STATUS_UNKNOWN
-        if combined.find("running") != -1:
-            st = comp.STATUS_STARTED
-        elif utils.has_any(combined, 'stop', 'unrecognized'):
-            st = comp.STATUS_STOPPED
-        return [
-            comp.ProgramStatus(name=self.get_option("type"),
-                               status=st,
-                               details=(sysout + stderr).strip()),
-        ]
+    def applications(self):
+        return [self.distro.get_command(self.get_option("type"), "daemon")[0]]

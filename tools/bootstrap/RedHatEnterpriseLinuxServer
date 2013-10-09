@@ -1,0 +1,6 @@
+# -*- sh -*-
+## Bootstrap for Redhat Enterprise Linux 6.x
+SHORTNAME=RHEL
+MIN_RELEASE=6.0
+
+source "$BSCONF_DIR/CommonRedHat"

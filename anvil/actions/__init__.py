@@ -14,8 +14,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from anvil.actions import build
 from anvil.actions import install
-from anvil.actions import package
+from anvil.actions import prepare
+from anvil.actions import remove
+from anvil.actions import restart
 from anvil.actions import start
 from anvil.actions import status
 from anvil.actions import stop
@@ -24,8 +27,11 @@ from anvil.actions import uninstall
 
 
 _NAMES_TO_RUNNER = {
+    'build': build.BuildAction,
     'install': install.InstallAction,
-    'package': package.PackageAction,
+    'prepare': prepare.PrepareAction,
+    'purge': remove.RemoveAction,
+    'restart': restart.RestartAction,
     'start': start.StartAction,
     'status': status.StatusAction,
     'stop': stop.StopAction,
@@ -36,16 +42,12 @@ _RUNNER_TO_NAMES = dict((v, k) for k, v in _NAMES_TO_RUNNER.items())
 
 
 def names():
-    """
-    Returns a list of the available action names.
-    """
+    """Returns a list of the available action names."""
     return list(sorted(_NAMES_TO_RUNNER.keys()))
 
 
 def class_for(action):
-    """
-    Given an action name, look up the factory for that action runner.
-    """
+    """Given an action name, look up the factory for that action runner."""
     try:
         return _NAMES_TO_RUNNER[action]
     except KeyError:

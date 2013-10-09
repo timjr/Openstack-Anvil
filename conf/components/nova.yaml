@@ -61,12 +61,15 @@ checksum_base_images: True
 glance_server: "$(glance:host):$(glance:api_port)"
 img_service: nova.image.glance.GlanceImageService
 
+# Force the config drive to turn on?
+force_cfg_drive: False
+
 # How instances will be named and where
 instance_name_postfix: "%08x"
 instance_name_prefix: "instance-"
 
 # Defaults to $NOVA_DIR/instances if empty
-instances_path: ''
+instances_path: ""
 
 # This decides which firewall driver to use:
 # The default here should work with linux + iptables + libvirt special sauce...
@@ -91,6 +94,10 @@ network_manager: nova.network.manager.FlatDHCPManager
 # Interface for public IP addresses
 public_interface: eth0
 
+neutron:
+  api_host: "$(neutron:api_host)"
+  api_port: "$(neutron:api_port)"
+
 # Currently novaclient needs you to specify the *compute api* version.
 nova_version: "1.1"
 
@@ -99,7 +106,7 @@ nova_version: "1.1"
 scheduler:  nova.scheduler.filter_scheduler.FilterScheduler
 
 # Should nova be in verbose mode?
-verbose: True
+log_verbose: True
 
 # Virtualization settings
 # Drivers known (libvirt, xensever, vmware, baremetal)
@@ -113,32 +120,22 @@ vncserver_listen: 127.0.0.1
 vncserver_proxyclient_address: ""
 xvpvncproxy_url: "http://$(auto:ip):6081/console"
 
-# Not currently working (to be replaced by cinder)
-volume_backing_file: ""
-volume_backing_file_size: 2052M
-volume_group: nova-volumes
-volume_name_postfix: "%08x"
-volume_name_prefix: "volume-"
+# Test exclusions...
+#
+# TODO(harlowja) these should probably be bugs...
+exclude_tests:
+  # Disable since neutronclient is not always installed.
+  - test_neutronv2
+  # Will fail if ipv6 turned off
+  - test_service_random_port_with_ipv6
+  - test_start_random_port_with_ipv6
+  - test_app_using_ipv6_and_ssl
+  # Bug in tests if libvirt installed
+  - test_libvirt
+  # Bug
+  - test_archive_deleted_rows_fk_constraint
 
-# Needed for setting up your database
-db:
-  type: "$(db:type)"
-  user: "$(db:user)"
-  host: "$(db:host)"
-  port: "$(db:port)"
-
-# Interactions with keystone are via the following settings
-keystone:
-  auth_host: "$(keystone:auth_host)"
-  auth_port: "$(keystone:auth_port)"
-  auth_proto: "$(keystone:auth_proto)"
-  service_host: "$(keystone:service_host)"
-  service_port: "$(keystone:service_port)"
-  service_proto: "$(keystone:service_proto)"
-
-# Rabbit mq hookins
-rabbit:
-  user_id: "$(rabbit-mq:user_id)"
-  host: "$(rabbit-mq:host)"
+exclude_tests_dir:
+  - smoketests
 
 ...

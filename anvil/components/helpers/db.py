@@ -30,9 +30,9 @@ PASSWORD_PROMPT = 'the database user'
 
 
 def get_shared_passwords(component):
-    mp = {}
-    mp['pw'] = component.get_password('sql')
-    return mp
+    return {
+        'pw': component.get_password('sql'),
+    }
 
 
 def drop_db(distro, dbtype, user, pw, dbname, **kwargs):
@@ -46,7 +46,6 @@ def drop_db(distro, dbtype, user, pw, dbname, **kwargs):
         cmds = list()
         cmds.append({
             'cmd': dropcmd,
-            'run_as_root': False,
         })
         utils.execute_template(*cmds, params=params)
     else:
@@ -67,7 +66,6 @@ def create_db(distro, dbtype, user, pw, dbname, **kwargs):
         cmds = list()
         cmds.append({
             'cmd': createcmd,
-            'run_as_root': False,
         })
         utils.execute_template(*cmds, params=params)
     else:
@@ -76,9 +74,7 @@ def create_db(distro, dbtype, user, pw, dbname, **kwargs):
 
 
 def grant_permissions(dbtype, distro, user, pw, restart_func=None):
-    """
-    Grant permissions on the database.
-    """
+    """Grant permissions on the database."""
     dbactions = distro.get_command_config(dbtype, quiet=True)
     if dbactions:
         grant_cmd = distro.get_command(dbtype, 'grant_all')

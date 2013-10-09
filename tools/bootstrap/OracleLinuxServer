@@ -1,0 +1,6 @@
+# -*- sh -*-
+## Bootstrap OEL 6.3+ for Openstack Anvil
+SHORTNAME=OEL
+MIN_RELEASE=6.3
+
+source "$BSCONF_DIR/CommonRedHat"

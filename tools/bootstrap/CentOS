@@ -1,0 +1,6 @@
+# -*- sh -*-
+## Bootstrap for CentOS Linux 6.x
+SHORTNAME=CENTOS
+MIN_RELEASE=6.0
+
+source "$BSCONF_DIR/CommonRedHat"

@@ -4,51 +4,76 @@ components:
 - general
 - db
 - rabbit-mq
+- oslo-config
 - keystone
+# Client used by many components
 - keystone-client
 - glance
+# Clients used by nova (+ others)
+- ceilometer-client
+- cinder-client
 - glance-client
-- no-vnc
+- heat-client
+- neutron-client
+- swift-client
+- neutron
+- openvswitch
+- cinder
 - nova
 - nova-client
-# These seem needed for horizon (even if not used?)
-- cinder-client
-- quantum-client
-- swift-client
+- django-openstack-auth
 - horizon
-# Super client, so install after other clients
-- openstack-client
 options:
-    no-vnc:
-        # This is the nova component name (we need this to hook into the nova conf...)
-        nova-component: nova
+    general:
+        install-all-deps: false
     nova:
         db-sync: true
         do-network-init: true
         mq-type: rabbit
+        enable-cells: false
+        enable-spice: false
+        local-conductor: false
+        neutron-enabled: true
+        neutron-core-plugin: linuxbridge
     glance:
         db-sync: true
         load-images: true
     keystone:
         db-sync: true
         do-init: true
+        enable-pki: false
     horizon:
-        db-sync: true
         make-blackhole: true
+    cinder:
+        db-sync: true
+        mq-type: rabbit
+    neutron:
+        db-sync: true
+        mq-type: rabbit
 subsystems:
     glance:
     - api
-    - reg
+    - registry
+    keystone:
+    - all
     nova:
     - api
-    - cauth
     - cert
-    - cpu
-    - net
-    - sched
-    - xvnc
-    - novnc
+    - compute
+    - conductor
+    - consoleauth
+    - network
+    - scheduler
+    - xvpvncproxy
+    - spicehtml5proxy
+    neutron:
+    - server
+    - agent
+    - l3-agent
+    cinder:
+    - api
+    - scheduler
+    - volume
 supports:
 - rhel
 ...
-

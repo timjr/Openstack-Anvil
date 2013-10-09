@@ -15,27 +15,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from anvil import components as comp
+from anvil.components import base_install as binstall
 
 
-class Installer(comp.PythonInstallComponent):
-    @property
-    def packages(self):
-        pkg_list = super(Installer, self).packages
-        if not pkg_list:
-            pkg_list = []
-        pips_to_packages = self.pips_to_packages
-        for pip_to_package in pips_to_packages:
-            if 'package' in pip_to_package:
-                pkg_list.append(pip_to_package['package'])
-        return pkg_list
-
-    def _get_python_directories(self):
-        return {}
-
-    def _get_download_config(self):
-        return None
+class Installer(binstall.PkgInstallComponent):
+    pass
 
 
-class Uninstaller(comp.PythonUninstallComponent):
+class Uninstaller(binstall.PkgUninstallComponent):
     pass

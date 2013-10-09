@@ -14,30 +14,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from anvil import action
 from anvil import colorizer
 from anvil import log
 
-from anvil.action import PhaseFunctors
+from anvil.actions import base as action
 
 LOG = log.getLogger(__name__)
-
-
-# Which phase files we will remove
-# at the completion of the given stage
-KNOCK_OFF_MAP = {
-    'uninstall': [
-        'download',
-    ],
-    'unconfigure': [
-        'configure',
-    ],
-    "post-uninstall": [
-        'download', 'configure',
-        'pre-install', 'install',
-        'post-install',
-    ],
-}
 
 
 class UninstallAction(action.Action):
@@ -51,46 +33,44 @@ class UninstallAction(action.Action):
         return components
 
     def _run(self, persona, component_order, instances):
+        removals = ['configure']
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=lambda i: LOG.info('Unconfiguring %s.', colorizer.quote(i.name)),
                 run=lambda i: i.unconfigure(),
                 end=None,
             ),
             component_order,
             instances,
-            "Unconfigure"
+            'unconfigure',
+            *removals
             )
+
+        removals += ['post-install']
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=None,
                 run=lambda i: i.pre_uninstall(),
                 end=None,
             ),
             component_order,
             instances,
-            "Pre-uninstall",
-            )
-        self._run_phase(
-            PhaseFunctors(
-                start=lambda i: LOG.info('Uninstalling %s.', colorizer.quote(i.name)),
-                run=lambda i: i.uninstall(),
-                end=None,
-            ),
-            component_order,
-            instances,
-            "Uninstall"
-            )
-        self._run_phase(
-            PhaseFunctors(
-                start=lambda i: LOG.info('Post-uninstalling %s.', colorizer.quote(i.name)),
-                run=lambda i: i.post_uninstall(),
-                end=None,
-            ),
-            component_order,
-            instances,
-            "Post-uninstall",
+            'pre-uninstall',
+            *removals
             )
 
-    def _get_opposite_stages(self, phase_name):
-        return ('install', KNOCK_OFF_MAP.get(phase_name.lower(), []))
+        removals += ['package-install', 'package-install-all-deps']
+        general_package = "general"
+        dependency_handler = self.distro.dependency_handler_class(
+            self.distro, self.root_dir, instances.values())
+        self._run_phase(
+            action.PhaseFunctors(
+                start=lambda i: LOG.info("Uninstalling packages"),
+                run=lambda i: dependency_handler.uninstall(),
+                end=None,
+            ),
+            [general_package],
+            {general_package: instances[general_package]},
+            "package-uninstall",
+            *removals
+            )

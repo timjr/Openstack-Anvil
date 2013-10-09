@@ -14,24 +14,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from anvil import action
 from anvil import colorizer
 from anvil import log
 
-from anvil.action import PhaseFunctors
+from anvil.actions import base as action
 
 LOG = log.getLogger(__name__)
-
-# Which phase files we will remove
-# at the completion of the given stage
-KNOCK_OFF_MAP = {
-    'start': [
-        'stopped',
-    ],
-    'post-start': [
-        'stopped',
-    ]
-}
 
 
 class StartAction(action.Action):
@@ -40,36 +28,38 @@ class StartAction(action.Action):
         return 'running'
 
     def _run(self, persona, component_order, instances):
+        removals = []
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=None,
                 run=lambda i: i.pre_start(),
                 end=None,
             ),
             component_order,
             instances,
-            "Pre-start",
+            "pre-start",
+            *removals
             )
+        removals += ['stopped']
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=lambda i: LOG.info('Starting %s.', i.name),
                 run=lambda i: i.start(),
                 end=lambda i, result: LOG.info("Start %s applications", colorizer.quote(result)),
             ),
             component_order,
             instances,
-            "Start"
+            "start",
+            *removals
             )
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=lambda i: LOG.info('Post-starting %s.', colorizer.quote(i.name)),
                 run=lambda i: i.post_start(),
                 end=None,
             ),
             component_order,
             instances,
-            "Post-start",
+            "post-start",
+            *removals
             )
-
-    def _get_opposite_stages(self, phase_name):
-        return ('stop', KNOCK_OFF_MAP.get(phase_name.lower(), []))

@@ -1,0 +1,67 @@
+---
+components:
+# Order matters here!
+- general
+- db
+- rabbit-mq
+- oslo-config
+- keystone
+# Client used by many components
+- keystone-client
+- glance
+# Clients used by nova (+ others)
+- glance-client
+- cinder-client
+- neutron-client
+- swift-client
+- neutron
+- cinder
+- nova
+- nova-client
+options:
+    nova:
+        db-sync: true
+        do-network-init: true
+        enable-cells: false
+        enable-spice: false
+        local-conductor: false
+        mq-type: rabbit
+        neutron-core-plugin: linuxbridge
+        neutron-enabled: true
+    glance:
+        db-sync: true
+        load-images: true
+    keystone:
+        db-sync: true
+        do-init: true
+        enable-pki: false
+    cinder:
+        db-sync: true
+        mq-type: rabbit
+    neutron:
+        db-sync: true
+        mq-type: rabbit
+subsystems:
+    glance:
+    - api
+    - registry
+    keystone:
+    - all
+    nova:
+    - api
+    - cert
+    - compute
+    - consoleauth
+    - scheduler
+    - xvpvncproxy
+    neutron:
+    - server
+    - agent
+    - l3-agent
+    cinder:
+    - api
+    - scheduler
+    - volume
+supports:
+- rhel
+...

@@ -15,6 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import copy
 import glob
 import platform
@@ -31,24 +32,25 @@ from anvil import shell as sh
 
 LOG = logging.getLogger(__name__)
 
+Component = collections.namedtuple(  # pylint: disable=C0103
+    "Component", 'entry_point,options,siblings')
+
 
 class Distro(object):
- 
-    def __init__(self, name, platform_pattern, packager_name, commands, components):
+    def __init__(self,
+                 name, platform_pattern,
+                 install_helper, dependency_handler,
+                 commands, components):
         self.name = name
         self._platform_pattern = re.compile(platform_pattern, re.IGNORECASE)
-        self._packager_name = packager_name
+        self._install_helper = install_helper
+        self._dependency_handler = dependency_handler
         self._commands = commands
         self._components = components
 
-    def get_command_config(self, key, *more_keys, **kargs):
-        """ Gets a end object for a given set of keys """
-        root = self._commands
-        acutal_keys = [key] + list(more_keys)
-        run_over_keys = acutal_keys[0:-1]
-        end_key = acutal_keys[-1]
-        quiet = kargs.get('quiet', False)
-        for k in run_over_keys:
+    def _fetch_value(self, root, keys, quiet):
+        end_key = keys[-1]
+        for k in keys[0:-1]:
             if quiet:
                 root = root.get(k)
                 if root is None:
@@ -62,11 +64,24 @@ class Distro(object):
             end_value = root.get(end_key)
         return end_value
 
-    def get_command(self, key, *more_keys, **kargs):
+    def get_dependency_config(self, key, *more_keys, **kwargs):
+        root = dict(self._dependency_handler)
+        # NOTE(harlowja): Don't allow access to the dependency handler class
+        # name. Access should be via the property instead.
+        root.pop('name', None)
+        keys = [key] + list(more_keys)
+        return self._fetch_value(root, keys, kwargs.get('quiet', False))
+
+    def get_command_config(self, key, *more_keys, **kwargs):
+        root = dict(self._commands)
+        keys = [key] + list(more_keys)
+        return self._fetch_value(root, keys, kwargs.get('quiet', False))
+
+    def get_command(self, key, *more_keys, **kwargs):
         """Retrieves a string for running a command from the setup
         and splits it to return a list.
         """
-        val = self.get_command_config(key, *more_keys, **kargs)
+        val = self.get_command_config(key, *more_keys, **kwargs)
         if not val:
             return []
         else:
@@ -83,21 +98,26 @@ class Distro(object):
         return bool(self._platform_pattern.search(platform_name))
 
     @property
-    def package_manager_class(self):
-        """Return a package manager that will work for this distro."""
-        return importer.import_entry_point(self._packager_name)
+    def install_helper_class(self):
+        """Return an install helper that will work for this distro."""
+        return importer.import_entry_point(self._install_helper)
+
+    @property
+    def dependency_handler_class(self):
+        """Return a dependency handler that will work for this distro."""
+        return importer.import_entry_point(self._dependency_handler["name"])
 
     def extract_component(self, name, action):
         """Return the class + component info to use for doing the action w/the component."""
         try:
-            # Use a copy instead of the original
+            # Use a copy instead of the original since we will be
+            # modifying this dictionary which may not be wanted for future
+            # usages of this dictionary (so keep the original clean)...
             component_info = copy.deepcopy(self._components[name])
-            action_classes = component_info['action_classes']
-            entry_point = action_classes[action]
-            del action_classes[action]
-            cls = importer.import_entry_point(entry_point)
-            return ((cls, component_info), action_classes)
-        except KeyError:
+            action_classes = component_info.pop('action_classes')
+            entry_point = action_classes.pop(action)
+            return Component(entry_point, component_info, action_classes)
+        except (KeyError, ValueError):
             raise RuntimeError('No class configured to %r %r on %r' %
                                (action, name, self.name))
 
@@ -121,9 +141,7 @@ def load(path):
     distro_possibles = []
     input_files = glob.glob(sh.joinpths(path, '*.yaml'))
     if not input_files:
-        raise excp.ConfigException(
-            'Did not find any distro definition files in %r' %
-            path)
+        raise excp.ConfigException('Did not find any distro definition files in %r' % path)
     for fn in input_files:
         LOG.debug("Attempting to load distro definition from %r", fn)
         try:

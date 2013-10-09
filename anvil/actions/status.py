@@ -14,17 +14,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from anvil import action
 from anvil import colorizer
 from anvil import log
 from anvil import utils
 
-from anvil.action import PhaseFunctors
+from anvil.actions import base as action
 
 LOG = log.getLogger(__name__)
 
-from anvil.components import (STATUS_INSTALLED, STATUS_STARTED,
-                              STATUS_STOPPED, STATUS_UNKNOWN)
+from anvil.components.base_runtime import STATUS_INSTALLED
+from anvil.components.base_runtime import STATUS_STARTED
+from anvil.components.base_runtime import STATUS_STOPPED
+from anvil.components.base_runtime import STATUS_UNKNOWN
 
 STATUS_COLOR_MAP = {
     STATUS_INSTALLED: 'green',
@@ -44,23 +45,37 @@ class StatusAction(action.Action):
         return 'running'
 
     def _fetch_status(self, component):
-        return component.status()
+        return component.statii()
 
     def _quote_status(self, status):
         return colorizer.quote(status, quote_color=STATUS_COLOR_MAP.get(status, 'red'))
 
     def _print_status(self, component, result):
         if not result:
-            LOG.info("Status of %s is %s.", colorizer.quote(component.name), self._quote_status(STATUS_UNKNOWN))
+            LOG.info("Status of %s is %s.", colorizer.quote(component.name), self._quote_status(STATUS_INSTALLED))
             return
 
-        def details_printer(entry, spacing, max_len):
-            det = utils.truncate_text(entry.details, max_len=max_len, from_bottom=True)
-            for line in det.splitlines():
+        def log_details(text, spacing, max_len):
+            text = utils.truncate_text(text, max_len=max_len, from_bottom=True)
+            for line in text.splitlines():
                 line = line.replace("\t", "\\t")
                 line = line.replace("\r", "\\r")
                 line = utils.truncate_text(line, max_len=120)
                 LOG.info("%s>> %s", (" " * spacing), line)
+
+        def details_printer(entry, spacing, max_len):
+            details = entry.details
+            if isinstance(details, (basestring, str)):
+                log_details(details, spacing, max_len)
+            elif isinstance(details, (dict)):
+                keys = sorted(details.keys())
+                for k in keys:
+                    LOG.info("%s%s:", (" " * spacing), str(k))
+                    log_details(details[k], spacing + 1, max_len)
+            elif details is None:
+                pass
+            else:
+                raise RuntimeError("Unknown how to print the details of %s" % (entry.name))
 
         if len(result) == 1:
             s = result[0]
@@ -79,7 +94,7 @@ class StatusAction(action.Action):
 
     def _run(self, persona, component_order, instances):
         self._run_phase(
-            PhaseFunctors(
+            action.PhaseFunctors(
                 start=None,
                 run=self._fetch_status,
                 end=self._print_status,

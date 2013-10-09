@@ -18,12 +18,19 @@
 #    under the License.
 
 import contextlib
+import glob
 import os
 import random
 import re
 import socket
 import tempfile
 import urllib2
+
+try:
+    # Only in python 2.7+
+    from collections import OrderedDict
+except ImportError:
+    from ordereddict import OrderedDict
 
 from datetime import datetime
 
@@ -44,7 +51,23 @@ from anvil import version
 
 from anvil.pprint import center_text
 
-MONTY_PYTHON_TEXT_RE = re.compile("([a-z0-9A-Z\?!.,'\"]+)")
+# Message queue types to there internal 'canonicalized' name
+MQ_TYPES = {
+    'qpid': 'qpid',
+    'qpidd': 'qpid',
+    'rabbit': 'rabbit',
+    'rabbit-mq': 'rabbit',
+}
+
+# Virt 'canonicalized' name to there computer driver name
+VIRT_DRIVER_MAP = {
+    'libvirt': 'libvirt.LibvirtDriver',
+    'xenserver': 'xenapi.XenAPIDriver',
+    'vmware': 'vmwareapi.VMWareESXDriver',
+    'baremetal': 'baremetal.BareMetalDriver',
+}
+
+MONTY_PYTHON_TEXT_RE = re.compile(r"([a-z0-9A-Z\?!.,'\"]+)")
 
 # Thx cowsay
 # See: http://www.nog.net/~tony/warez/cowsay.shtml
@@ -67,6 +90,25 @@ COWS['unhappy'] = r'''
 '''
 
 LOG = logging.getLogger(__name__)
+
+
+class ExponentialBackoff(object):
+    def __init__(self, attempts=5, start=1.3):
+        self.start = start
+        self.attempts = attempts
+
+    def __iter__(self):
+        value = self.start
+        if self.attempts <= 0:
+            raise StopIteration()
+        yield value
+        for _i in xrange(0, self.attempts - 1):
+            value = value * value
+            yield value
+
+    def __str__(self):
+        vals = [str(v) for v in self]
+        return "Backoff %s" % (vals)
 
 
 def expand_template(contents, params):
@@ -113,35 +155,38 @@ def has_any(text, *look_for):
     return False
 
 
-def wait_for_url(url, max_attempts=3, wait_between=5):
-    excps = []
-    LOG.info("Waiting for url %s to become active (max_attempts=%s, seconds_between=%s)",
-             colorizer.quote(url), max_attempts, wait_between)
+def wait_for_url(url, max_attempts=5):
+    LOG.info("Waiting for url %s to become active (max_attempts=%s)",
+             colorizer.quote(url), max_attempts)
 
-    def waiter():
-        LOG.info("Sleeping for %s seconds, %s is still not active.", wait_between, colorizer.quote(url))
-        sh.sleep(wait_between)
+    def waiter(sleep_secs):
+        LOG.info("Sleeping for %s seconds, %s is still not active.", sleep_secs, colorizer.quote(url))
+        sh.sleep(sleep_secs)
 
     def success(attempts):
         LOG.info("Url %s became active after %s attempts!", colorizer.quote(url), attempts)
 
-    for i in range(0, max_attempts):
+    excps = []
+    attempts = 0
+    for sleep_time in ExponentialBackoff(attempts=max_attempts):
+        attempts += 1
         try:
             with contextlib.closing(urllib2.urlopen(urllib2.Request(url))) as req:
                 req.read()
-                success(i + 1)
+                success(attempts)
                 return
         except urllib2.HTTPError as e:
-            if e.code in xrange(200, 499) or e.code in [501]:
+            if e.code in range(200, 600):
                 # Should be ok, at least its responding...
-                success(i + 1)
+                # although potentially incorrectly...
+                success(attempts)
                 return
             else:
                 excps.append(e)
-                waiter()
+                waiter(sleep_time)
         except IOError as e:
             excps.append(e)
-            waiter()
+            waiter(sleep_time)
     if excps:
         raise excps[-1]
 
@@ -167,7 +212,7 @@ def iso8601():
 
 
 def merge_dicts(*dicts, **kwargs):
-    merged = {}
+    merged = OrderedDict()
     for mp in dicts:
         for (k, v) in mp.items():
             if kwargs.get('preserve') and k in merged:
@@ -222,8 +267,8 @@ def get_deep(items, path, quiet=True):
 
 
 def load_template(component, template_name):
-    templ_pth = sh.joinpths(settings.TEMPLATE_DIR, component, template_name)
-    return (templ_pth, sh.load_file(templ_pth))
+    path = sh.joinpths(settings.TEMPLATE_DIR, component, template_name)
+    return (path, sh.load_file(path))
 
 
 def execute_template(cmd, *cmds, **kargs):
@@ -241,10 +286,10 @@ def execute_template(cmd, *cmds, **kargs):
                 stdin_tpl = [stdin_tpl]
             stdin = [expand_template(c, params) for c in stdin_tpl]
             stdin = "\n".join(stdin)
-        result = sh.execute(*run_what,
-                            run_as_root=info.get('run_as_root', False),
+        result = sh.execute(run_what,
                             process_input=stdin,
-                            ignore_exit_code=info.get('ignore_failure', False),
+                            check_exit_code=not info.get(
+                                'ignore_failure', False),
                             **kargs)
         results.append(result)
     return results
@@ -313,10 +358,11 @@ def log_iterable(to_log, header=None, logger=None, color='blue'):
 
 @contextlib.contextmanager
 def progress_bar(name, max_am, reverse=False):
-    widgets = list()
-    widgets.append('%s: ' % (name))
-    widgets.append(progressbar.Percentage())
-    widgets.append(' ')
+    widgets = [
+        '%s: ' % (name),
+        progressbar.Percentage(),
+        ' ',
+    ]
     if reverse:
         widgets.append(progressbar.ReverseBar())
     else:
@@ -343,9 +389,8 @@ def tempdir(**kwargs):
         sh.deldir(tdir)
 
 
-def get_host_ip():
-    """
-    Returns the actual ip of the local machine.
+def get_host_ip(default_ip='127.0.0.1'):
+    """Returns the actual ip of the local machine.
 
     This code figures out what source address would be used if some traffic
     were to be sent out to some well known address on the Internet. In this
@@ -358,12 +403,14 @@ def get_host_ip():
     try:
         csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         csock.connect(('8.8.8.8', 80))
-        (addr, _) = csock.getsockname()
-        csock.close()
-        ip = addr
+        with contextlib.closing(csock) as s:
+            (addr, _) = s.getsockname()
+            if addr:
+                ip = addr
     except socket.error:
         pass
-    # Attempt to find it
+    # Attempt to find the first ipv4 with an addr
+    # and use that as the address
     if not ip:
         interfaces = get_interfaces()
         for (_, net_info) in interfaces.items():
@@ -373,27 +420,27 @@ def get_host_ip():
                 if a_ip:
                     ip = a_ip
                     break
-    # Just return a localhost version then
+    # Just return a default verson then
     if not ip:
-        ip = "127.0.0.1"
+        ip = default_ip
     return ip
 
 
 @contextlib.contextmanager
 def chdir(where_to):
-    curr_cd = os.getcwd()
-    if curr_cd == where_to:
+    curr_dir = os.getcwd()
+    if curr_dir == where_to:
         yield where_to
     else:
         try:
             os.chdir(where_to)
             yield where_to
         finally:
-            os.chdir(curr_cd)
+            os.chdir(curr_dir)
 
 
 def get_interfaces():
-    interfaces = {}
+    interfaces = OrderedDict()
     for intfc in netifaces.interfaces():
         interface_info = {}
         interface_addresses = netifaces.ifaddresses(intfc)
@@ -422,72 +469,39 @@ def joinlinesep(*pieces):
 
 
 def prettify_yaml(obj):
-    formatted = yaml.dump(obj,
-                    line_break="\n",
-                    indent=4,
-                    explicit_start=True,
-                    explicit_end=True,
-                    default_flow_style=False,
-                    )
+    formatted = yaml.safe_dump(obj,
+                               line_break="\n",
+                               indent=4,
+                               explicit_start=True,
+                               explicit_end=True,
+                               default_flow_style=False)
     return formatted
 
 
+def _pick_message(pattern, def_message="This page is intentionally left blank."):
+    if not pattern:
+        return def_message
+    expanded_pattern = sh.joinpths(settings.MESSAGING_DIR, pattern)
+    file_matches = glob.glob(expanded_pattern)
+    file_matches = [f for f in file_matches if sh.isfile(f)]
+    try:
+        file_selected = random.choice(file_matches)
+        with open(file_selected, 'r') as fh:
+            contents = fh.read()
+        contents = contents.strip("\n\r")
+        if not contents:
+            contents = def_message
+        return contents
+    except (IndexError, IOError):
+        return def_message
+
+
 def _get_welcome_stack():
-    possibles = []
-    # Thank you figlet ;)
-    # See: http://www.figlet.org/
-    possibles.append(r'''
-  ___  ____  _____ _   _ ____ _____  _    ____ _  __
- / _ \|  _ \| ____| \ | / ___|_   _|/ \  / ___| |/ /
-| | | | |_) |  _| |  \| \___ \ | | / _ \| |   | ' /
-| |_| |  __/| |___| |\  |___) || |/ ___ \ |___| . \
- \___/|_|   |_____|_| \_|____/ |_/_/   \_\____|_|\_\
-
-''')
-    possibles.append(r'''
-  ___  ___ ___ _  _ ___ _____ _   ___ _  __
- / _ \| _ \ __| \| / __|_   _/_\ / __| |/ /
-| (_) |  _/ _|| .` \__ \ | |/ _ \ (__| ' <
- \___/|_| |___|_|\_|___/ |_/_/ \_\___|_|\_\
-
-''')
-    possibles.append(r'''
-____ ___  ____ _  _ ____ ___ ____ ____ _  _
-|  | |__] |___ |\ | [__   |  |__| |    |_/
-|__| |    |___ | \| ___]  |  |  | |___ | \_
-
-''')
-    possibles.append(r'''
-  _  ___ ___  _  _  __  ___  _   __  _  _
- / \| o \ __|| \| |/ _||_ _|/ \ / _|| |//
-( o )  _/ _| | \\ |\_ \ | || o ( (_ |  (
- \_/|_| |___||_|\_||__/ |_||_n_|\__||_|\\
-
-''')
-    possibles.append(r'''
-   _   ___  ___  _  __  ___ _____  _    __  _
- ,' \ / o |/ _/ / |/ /,' _//_  _/.' \ ,'_/ / //7
-/ o |/ _,'/ _/ / || /_\ `.  / / / o // /_ /  ,'
-|_,'/_/  /___//_/|_//___,' /_/ /_n_/ |__//_/\\
-
-''')
-    possibles.append(r'''
- _____  ___    ___    _   _  ___   _____  _____  ___    _   _
-(  _  )(  _`\ (  _`\ ( ) ( )(  _`\(_   _)(  _  )(  _`\ ( ) ( )
-| ( ) || |_) )| (_(_)| `\| || (_(_) | |  | (_) || ( (_)| |/'/'
-| | | || ,__/'|  _)_ | , ` |`\__ \  | |  |  _  || |  _ | , <
-| (_) || |    | (_( )| |`\ |( )_) | | |  | | | || (_( )| |\`\
-(_____)(_)    (____/'(_) (_)`\____) (_)  (_) (_)(____/'(_) (_)
-
-''')
-    return random.choice(possibles).strip("\n\r")
-
+    return _pick_message("stacks.*")
 
 
 def _welcome_slang():
-    potentials = list()
-    potentials.append("And now for something completely different!")
-    return random.choice(potentials)
+    return _pick_message("welcome.*")
 
 
 def _color_blob(text, text_color):
@@ -500,201 +514,19 @@ def _color_blob(text, text_color):
 
 
 def _goodbye_header(worked):
-    # Cowsay headers
-    # See: http://www.nog.net/~tony/warez/cowsay.shtml
-    potentials_oks = []
-    potentials_oks.append(r'''
- ___________
-/ You shine \
-| out like  |
-| a shaft   |
-| of gold   |
-| when all  |
-| around is |
-\ dark.     /
- -----------
-''')
-    potentials_oks.append(r'''
- ______________________________
-< I'm a lumberjack and I'm OK. >
- ------------------------------
-''')
-    potentials_oks.append(r'''
- ____________________
-/ Australia!         \
-| Australia!         |
-| Australia!         |
-\ We love you, amen. /
- --------------------
-''')
-    potentials_oks.append(r'''
- ______________
-/ Say no more, \
-| Nudge nudge  |
-\ wink wink.   /
- --------------
-''')
-    potentials_oks.append(r'''
- ________________
-/ And there was  \
-\ much rejoicing /
- ----------------
-''')
-    potentials_oks.append(r'''
- __________
-< Success! >
- ----------''')
-    potentials_fails = []
-    potentials_fails.append(r'''
- __________
-< Failure! >
- ----------
-''')
-    potentials_fails.append(r'''
- ___________
-< Run away! >
- -----------
-''')
-    potentials_fails.append(r'''
- ______________________
-/ NOBODY expects the   \
-\ Spanish Inquisition! /
- ----------------------
-''')
-    potentials_fails.append(r'''
- ______________________
-/ Spam spam spam spam  \
-\ baked beans and spam /
- ----------------------
-''')
-    potentials_fails.append(r'''
- ____________________
-/ Brave Sir Robin    \
-\ ran away.          /
- --------------------
-''')
-    potentials_fails.append(r'''
- _______________________
-< Message for you, sir. >
- -----------------------
-''')
-    potentials_fails.append(r'''
- ____________________
-/ We are the knights \
-\ who say.... NI!    /
- --------------------
-''')
-    potentials_fails.append(r'''
- ____________________
-/ Now go away or I   \
-| shall taunt you a  |
-\ second time.       /
- --------------------
-''')
-    potentials_fails.append(r'''
- ____________________
-/ It's time for the  \
-| penguin on top of  |
-| your television to |
-\ explode.           /
- --------------------
-''')
-    potentials_fails.append(r'''
- _____________________
-/ We were in the nick \
-| of time. You were   |
-\ in great peril.     /
- ---------------------
-''')
-    potentials_fails.append(r'''
- ___________________
-/ I know a dead     \
-| parrot when I see |
-| one, and I'm      |
-| looking at one    |
-\ right now.        /
- -------------------
-''')
-    potentials_fails.append(r'''
- _________________
-/ Welcome to the  \
-| National Cheese |
-\ Emporium        /
- -----------------
-''')
-    potentials_fails.append(r'''
- ______________________
-/ What is the airspeed \
-| velocity of an       |
-\ unladen swallow?     /
- ----------------------
-''')
-    potentials_fails.append(r'''
- ______________________
-/ Now stand aside,     \
-\ worthy adversary.    /
- ----------------------
-''')
-    potentials_fails.append(r'''
- ___________________
-/ Okay, we'll call  \
-\ it a draw.        /
- -------------------
-''')
-    potentials_fails.append(r'''
- _______________
-/ She turned me \
-\ into a newt!  /
- ---------------
-''')
-    potentials_fails.append(r'''
- ___________________
-< Fetchez la vache! >
- -------------------
-''')
-    potentials_fails.append(r'''
- __________________________
-/ We'd better not risk     \
-| another frontal assault, |
-\ that rabbit's dynamite.  /
- --------------------------
-''')
-    potentials_fails.append(r'''
- ______________________
-/ This is supposed to  \
-| be a happy occasion. |
-| Let's not bicker and |
-| argue about who      |
-\ killed who.          /
- ----------------------
-''')
-    potentials_fails.append(r'''
- _______________________
-< You have been borked. >
- -----------------------
-''')
-    potentials_fails.append(r'''
- __________________
-/ We used to dream  \
-| of living in a    |
-\ corridor!         /
- -------------------
-''')
+    msg = _pick_message("success.*")
+    apply_color = 'green'
     if not worked:
-        msg = random.choice(potentials_fails).strip("\n\r")
-        colored_msg = _color_blob(msg, 'red')
-    else:
-        msg = random.choice(potentials_oks).strip("\n\r")
-        colored_msg = _color_blob(msg, 'green')
-    return colored_msg
+        msg = _pick_message("fails.*")
+        apply_color = 'red'
+    return _color_blob(msg, apply_color)
 
 
 def goodbye(worked):
-    if worked:
-        cow = COWS['happy']
-        eye_fmt = colorizer.color('o', 'green')
-        ear = colorizer.color("^", 'green')
-    else:
+    cow = COWS['happy']
+    eye_fmt = colorizer.color('o', 'green')
+    ear = colorizer.color("^", 'green')
+    if not worked:
         cow = COWS['unhappy']
         eye_fmt = colorizer.color("o", 'red')
         ear = colorizer.color("v", 'red')
@@ -721,3 +553,30 @@ def welcome(prog_name='Anvil', version_text=version.version_string()):
     slang = center_text(_welcome_slang(), ' ', real_max)
     print(colorizer.color(slang, 'magenta', bold=True))
     return ("-", real_max)
+
+
+def splitlines_not_empty(text):
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            yield line
+
+
+def canon_mq_type(mq_type):
+    mq_type = str(mq_type).lower().strip()
+    return MQ_TYPES.get(mq_type, 'rabbit')
+
+
+def canon_virt_driver(virt_driver):
+    virt_driver = str(virt_driver).strip().lower()
+    if not (virt_driver in VIRT_DRIVER_MAP):
+        return 'libvirt'
+    return virt_driver
+
+
+def strip_prefix_suffix(line, prefix=None, suffix=None):
+    if prefix and line.startswith(prefix):
+        line = line[len(prefix):]
+    if suffix and line.endswith(suffix):
+        line = line[:-len(suffix)]
+    return line
