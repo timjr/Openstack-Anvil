@@ -187,6 +187,7 @@ except KeyError:
     echo -e "Building ${COL_YELLOW}missing${COL_RESET} python requirements:"
     dump_list "$missing_packages"
     local pip_tmp_dir="$bootstrap_dir/pip-download"
+    rm -rf "$pip_tmp_dir"
     mkdir -p "$pip_tmp_dir"
 
     echo "Downloading..."
